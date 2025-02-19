@@ -2,29 +2,30 @@ import asyncio
 import datetime
 import csv
 import os
-import json
+import time
 from aiohttp import ClientSession
 from aiolimiter import AsyncLimiter
 
 ###############################################################################
 # 1. CONFIGURATION
 ###############################################################################
-RIOT_API_KEY = "YOUR_RIOT_API_KEY_HEREa"
+RIOT_API_KEY = "RGAPI-826316c2-e5a5-490c-a098-8f5717a1486a"
+
 MATCH_REGION_BASE_URL = "https://europe.api.riotgames.com"
 BASE_DOMAIN = "eun1.api.riotgames.com"
 
-# Only matches that start on or after 9 January 2025 (Season 15)
-SEASON15_START_TIMESTAMP = int(datetime.datetime(2025, 1, 9, 0, 0, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+# Officially: 20 requests / 1s, 100 requests / 120s
+RATE_LIMIT_1S = AsyncLimiter(20, 1)
+RATE_LIMIT_2M = AsyncLimiter(100, 120)
 
-# Skip matches under 300 seconds (likely remakes)
+SEASON15_START_TIMESTAMP = int(datetime.datetime(2025, 1, 9, 0, 0, tzinfo=datetime.timezone.utc).timestamp() * 1000)
 MIN_DURATION_SECONDS = 300
 
 CHUNK_SIZE = 50
 MAX_ROWS = 200000
 MATCH_HISTORY_COUNT = 20
-INITIAL_PUUID = "EXAMPLE_PUUID_HERE"
+INITIAL_PUUID = "cqDe59xS5WE0zUcXW-llmRZA9mbSKa33yU1jOhKeIOJjTq06TBYksILqatmaJzfjg-_fXZR8zkPrGQ"
 
-RATE_LIMIT = AsyncLimiter(15, 1.0)
 HEADERS = {"X-Riot-Token": RIOT_API_KEY}
 
 PLATFORM_MAP = {
@@ -41,24 +42,28 @@ PLATFORM_MAP = {
 }
 
 ###############################################################################
-# 2. DATA DRAGON FOR ITEM MAPPING
+# 2. DATA DRAGON (ITEM MAPPING)
 ###############################################################################
 async def get_latest_dd_version(session: ClientSession):
     url = "https://ddragon.leagueoflegends.com/api/versions.json"
     async with session.get(url) as resp:
-        versions = await resp.json()
-        return versions[0] if versions else None
+        if resp.status == 200:
+            versions = await resp.json()
+            return versions[0] if versions else None
+        return None
 
 async def load_item_mapping(session: ClientSession, version: str):
     url = f"https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/item.json"
     async with session.get(url) as resp:
-        data = await resp.json()
-        mapping = {}
-        for item_id, details in data.get("data", {}).items():
-            mapping[int(item_id)] = details.get("name", f"Item_{item_id}")
-        return mapping
+        if resp.status == 200:
+            data = await resp.json()
+            mapping = {}
+            for item_id, details in data.get("data", {}).items():
+                mapping[int(item_id)] = details.get("name", f"Item_{item_id}")
+            return mapping
+        return {}
 
-ITEM_MAP = {}  # global item map
+ITEM_MAP = {}
 
 ###############################################################################
 # 3. HELPER FUNCTIONS
@@ -72,77 +77,86 @@ def default_numeric(value):
 def default_text(value):
     return value if value not in [None, ""] else "N/A"
 
-def clamp_value(val, min_val=0, max_val=3000000):
-    if val < min_val:
-        return min_val
-    if val > max_val:
-        return max_val
-    return val
-
 def get_item_name(item_id):
     try:
-        item_id = int(item_id)
+        iid = int(item_id)
     except (TypeError, ValueError):
         return "N/A"
-    return ITEM_MAP.get(item_id, f"Item_{item_id}")
+    return ITEM_MAP.get(iid, f"Item_{iid}")
 
 def map_queue_id(qid):
     return "Ranked Solo/Duo" if qid == 420 else f"Queue_{qid}"
 
 ###############################################################################
-# 4. ASYNC REQUEST
+# 4. SAFE REQUEST (TWO LIMITERS + INDEFINITE 429 RETRY)
 ###############################################################################
-async def do_request(session: ClientSession, url: str, method="GET", params=None, headers=None, retries=0, max_retries=5):
+async def do_request(session: ClientSession, url: str, params=None, headers=None):
+    """
+    1) Acquire two limiters to ensure we never exceed 20req/1s or 100req/120s.
+    2) If we get 429 for any reason, parse 'Retry-After' or fallback to a short wait.
+       Retry indefinitely (since we have days to run).
+    """
     if headers is None:
         headers = {}
-    if retries > max_retries:
-        print(f"[ERROR] Exceeded max retries for URL: {url}")
-        return None
-    async with RATE_LIMIT:
-        try:
-            resp = await session.get(url, params=params, headers=headers)
-        except Exception as e:
-            print(f"[WARN] Exception {e} for URL: {url} - retrying in 2s...")
-            await asyncio.sleep(2)
-            return await do_request(session, url, method, params, headers, retries+1)
-    if resp.status == 200:
-        return resp
-    elif resp.status == 429:
-        retry_after = int(resp.headers.get("Retry-After", 1))
-        print(f"[429] Rate limit reached. Waiting {retry_after}s for URL: {url}")
-        await asyncio.sleep(retry_after)
-        return await do_request(session, url, method, params, headers, retries+1)
-    elif resp.status in [500,502,503,504]:
-        print(f"[{resp.status}] Server error for URL: {url}. Waiting 5s...")
-        await asyncio.sleep(5)
-        return await do_request(session, url, method, params, headers, retries+1)
-    else:
-        text = await resp.text()
-        print(f"[{resp.status}] {text} for URL: {url}")
-        return None
+
+    while True:
+        async with RATE_LIMIT_1S, RATE_LIMIT_2M:
+            try:
+                resp = await session.get(url, params=params, headers=headers)
+            except Exception as e:
+                print(f"[WARN] Exception {e} for URL: {url}. Waiting 2s, then retrying.")
+                await asyncio.sleep(2)
+                continue
+
+        if resp.status == 200:
+            return resp
+        elif resp.status == 429:
+            # parse recommended wait
+            retry_after = resp.headers.get("Retry-After", "1")
+            try:
+                wait_secs = int(retry_after)
+            except ValueError:
+                wait_secs = 1
+            print(f"[429] Rate limit from server. We'll wait {wait_secs}s and retry. URL: {url}")
+            await asyncio.sleep(wait_secs)
+            continue
+        elif resp.status in [500, 502, 503, 504]:
+            print(f"[{resp.status}] Server error for URL: {url}. Waiting 5s then retry.")
+            await asyncio.sleep(5)
+            continue
+        else:
+            txt = await resp.text()
+            print(f"[{resp.status}] {txt} for URL: {url}")
+            return None
 
 ###############################################################################
 # 5. SPECIFIC ENDPOINT FUNCTIONS
 ###############################################################################
-async def get_match_history(session: ClientSession, puuid: str, count=MATCH_HISTORY_COUNT):
+async def get_match_history(session, puuid, count=MATCH_HISTORY_COUNT):
     url = f"{MATCH_REGION_BASE_URL}/lol/match/v5/matches/by-puuid/{puuid}/ids"
     params = {"count": count}
-    resp = await do_request(session, url, headers=HEADERS, params=params)
-    return await resp.json() if resp else []
+    resp = await do_request(session, url, params=params, headers=HEADERS)
+    if resp:
+        return await resp.json()
+    return []
 
-async def get_match_details(session: ClientSession, match_id: str):
+async def get_match_details(session, match_id):
     url = f"{MATCH_REGION_BASE_URL}/lol/match/v5/matches/{match_id}"
     resp = await do_request(session, url, headers=HEADERS)
-    return await resp.json() if resp else None
+    if resp:
+        return await resp.json()
+    return None
 
-async def get_match_timeline(session: ClientSession, match_id: str):
+async def get_match_timeline(session, match_id):
     url = f"{MATCH_REGION_BASE_URL}/lol/match/v5/matches/{match_id}/timeline"
     resp = await do_request(session, url, headers=HEADERS)
-    return await resp.json() if resp else None
+    if resp:
+        return await resp.json()
+    return None
 
-async def get_summoner_rank(session: ClientSession, summoner_id: str, platform: str):
-    base = PLATFORM_MAP.get(platform.upper(), BASE_DOMAIN)
-    url = f"https://{base}/lol/league/v4/entries/by-summoner/{summoner_id}"
+async def get_summoner_rank(session, summoner_id, platform):
+    base_domain = PLATFORM_MAP.get(platform.upper(), BASE_DOMAIN)
+    url = f"https://{base_domain}/lol/league/v4/entries/by-summoner/{summoner_id}"
     resp = await do_request(session, url, headers=HEADERS)
     rank_info = {
         "solo_tier": "N/A", "solo_rank": "N/A", "solo_lp": 0,
@@ -153,44 +167,43 @@ async def get_summoner_rank(session: ClientSession, summoner_id: str, platform: 
     if resp:
         data = await resp.json()
         for entry in data:
-            q_type = entry.get("queueType")
+            q_type = entry.get("queueType", "")
+            tier = entry.get("tier", "N/A")
+            rank_ = entry.get("rank", "N/A")
+            lp = default_numeric(entry.get("leaguePoints"))
+            wins_ = default_numeric(entry.get("wins"))
+            losses_ = default_numeric(entry.get("losses"))
             if q_type == "RANKED_SOLO_5x5":
-                rank_info["solo_tier"] = default_text(entry.get("tier"))
-                rank_info["solo_rank"] = default_text(entry.get("rank"))
-                rank_info["solo_lp"]   = default_numeric(entry.get("leaguePoints"))
-                rank_info["solo_wins"] = default_numeric(entry.get("wins"))
-                rank_info["solo_losses"] = default_numeric(entry.get("losses"))
+                rank_info["solo_tier"] = tier
+                rank_info["solo_rank"] = rank_
+                rank_info["solo_lp"]   = lp
+                rank_info["solo_wins"] = wins_
+                rank_info["solo_losses"] = losses_
             elif q_type == "RANKED_FLEX_SR":
-                rank_info["flex_tier"] = default_text(entry.get("tier"))
-                rank_info["flex_rank"] = default_text(entry.get("rank"))
-                rank_info["flex_lp"]   = default_numeric(entry.get("leaguePoints"))
-                rank_info["flex_wins"] = default_numeric(entry.get("wins"))
-                rank_info["flex_losses"] = default_numeric(entry.get("losses"))
+                rank_info["flex_tier"] = tier
+                rank_info["flex_rank"] = rank_
+                rank_info["flex_lp"]   = lp
+                rank_info["flex_wins"] = wins_
+                rank_info["flex_losses"] = losses_
     return rank_info
 
-async def get_champion_mastery_list(session: ClientSession, puuid: str):
+async def get_champion_mastery_list(session, puuid):
     url = f"https://{BASE_DOMAIN}/lol/champion-mastery/v4/champion-masteries/by-puuid/{puuid}"
     resp = await do_request(session, url, headers=HEADERS)
-    if not resp:
-        return []
-    return await resp.json()
+    if resp:
+        return await resp.json()
+    return []
 
 def extract_champion_mastery(mastery_list, champion_id):
     for item in mastery_list:
         if item.get("championId") == champion_id:
-            lvl = clamp_value(default_numeric(item.get("championLevel")), 0, 20_000)
-            pts = clamp_value(default_numeric(item.get("championPoints")), 0, 3_000_000)
-            lastp = clamp_value(default_numeric(item.get("lastPlayTime")), 0, 2_000_000_000_0000)
-            pSince = clamp_value(default_numeric(item.get("championPointsSinceLastLevel")), 0, 9999999)
-            pUntil = clamp_value(default_numeric(item.get("championPointsUntilNextLevel")), 0, 9999999)
-            tokens = clamp_value(default_numeric(item.get("tokensEarned")), 0, 50)
             return {
-                "mastery_level": lvl,
-                "mastery_points": pts,
-                "mastery_lastPlayTime": lastp,
-                "mastery_pointsSinceLastLevel": pSince,
-                "mastery_pointsUntilNextLevel": pUntil,
-                "mastery_tokens": tokens,
+                "mastery_level": max(0, item.get("championLevel", 0)),
+                "mastery_points": max(0, item.get("championPoints", 0)),
+                "mastery_lastPlayTime": max(0, item.get("lastPlayTime", 0)),
+                "mastery_pointsSinceLastLevel": max(0, item.get("championPointsSinceLastLevel", 0)),
+                "mastery_pointsUntilNextLevel": max(0, item.get("championPointsUntilNextLevel", 0)),
+                "mastery_tokens": max(0, item.get("tokensEarned", 0)),
             }
     return {
         "mastery_level": 0,
@@ -202,7 +215,7 @@ def extract_champion_mastery(mastery_list, champion_id):
     }
 
 ###############################################################################
-# 6. FINAL CHAMPION STATS FROM TIMELINE
+# 6. TIMELINE FINAL STATS (unchanged)
 ###############################################################################
 def get_final_champion_stats(timeline_data, participant_id):
     result = {}
@@ -213,9 +226,8 @@ def get_final_champion_stats(timeline_data, participant_id):
         return result
     last_frame = frames[-1]
     participant_frames = last_frame.get("participantFrames", {})
-    frame_data = participant_frames.get(str(int(participant_id)), {})
-    champ_stats = frame_data.get("championStats", {})
-
+    fdata = participant_frames.get(str(int(participant_id)), {})
+    cstats = fdata.get("championStats", {})
     fields = [
         "abilityHaste","abilityPower","armor","armorPen","armorPenPercent",
         "attackDamage","attackSpeed","bonusArmorPenPercent","bonusMagicPenPercent",
@@ -224,11 +236,11 @@ def get_final_champion_stats(timeline_data, participant_id):
         "omnivamp","physicalVamp","power","powerMax","powerRegen","spellVamp"
     ]
     for field in fields:
-        result[field] = default_numeric(champ_stats.get(field))
+        result[field] = default_numeric(cstats.get(field))
     return result
 
 ###############################################################################
-# 7. PROCESS MATCH DATA – INCLUDES TEAM-LEVEL STATS + NEW COLUMNS
+# 7. PROCESS MATCH DATA (unchanged)
 ###############################################################################
 async def process_match_data(session, match_data, timeline_data, mastery_cache):
     if not match_data:
@@ -461,7 +473,7 @@ async def process_match_data(session, match_data, timeline_data, mastery_cache):
     return rows
 
 ###############################################################################
-# 8. SAVE TO CSV
+# 8. SAVE TO CSV (with try/except for file removal)
 ###############################################################################
 def save_chunk_to_csv(all_data, total_rows):
     if not all_data:
@@ -477,12 +489,18 @@ def save_chunk_to_csv(all_data, total_rows):
     prev_count = total_rows - CHUNK_SIZE
     if prev_count > 0:
         prev_filename = f"league_data_flat_{prev_count}.csv"
+        # Check if file exists before attempting removal
         if os.path.exists(prev_filename):
-            os.remove(prev_filename)
-            print(f"Removed previous file: {prev_filename}")
+            try:
+                os.remove(prev_filename)
+                print(f"Removed previous file: {prev_filename}")
+            except PermissionError:
+                print(f"[WARN] Could not remove locked file: {prev_filename}. Skipping removal.")
+        else:
+            print(f"[INFO] Previous file {prev_filename} not found. Skipping removal.")
 
 ###############################################################################
-# 9. MAIN FUNCTION
+# 9. MAIN
 ###############################################################################
 async def main():
     global ITEM_MAP
@@ -492,22 +510,20 @@ async def main():
     total_rows = 0
     rows_since_last_save = 0
 
-    # We'll keep a champion mastery cache to avoid multiple calls
     mastery_cache = {}
 
     async with ClientSession() as session:
-        # Load item mapping from Data Dragon
-        latest_version = await get_latest_dd_version(session)
-        if latest_version:
-            ITEM_MAP = await load_item_mapping(session, latest_version)
-            print(f"[INFO] Loaded item map for version {latest_version}, total items: {len(ITEM_MAP)}")
+        ver = await get_latest_dd_version(session)
+        if ver:
+            ITEM_MAP = await load_item_mapping(session, ver)
+            print(f"[INFO] Loaded item map for version {ver}, total items: {len(ITEM_MAP)}")
         else:
-            print("[WARN] Could not load Data Dragon version; item map will be empty.")
+            print("[WARN] Could not load Data Dragon version; item map is empty.")
 
         while total_rows < MAX_ROWS and puuid_pool:
             current_puuid = puuid_pool.pop()
             print(f"[INFO] Fetching match history for PUUID: {current_puuid}")
-            match_ids = await get_match_history(session, current_puuid, count=MATCH_HISTORY_COUNT)
+            match_ids = await get_match_history(session, current_puuid, MATCH_HISTORY_COUNT)
             if not match_ids:
                 print(f"[WARN] No match_ids for {current_puuid} or error while fetching.")
                 continue
@@ -535,7 +551,6 @@ async def main():
                 if total_rows >= MAX_ROWS:
                     break
 
-    # Save remaining rows if chunk not empty
     if all_data and (total_rows % CHUNK_SIZE != 0):
         save_chunk_to_csv(all_data, total_rows)
 
