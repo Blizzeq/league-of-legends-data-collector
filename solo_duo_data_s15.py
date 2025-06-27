@@ -188,9 +188,9 @@ async def get_match_timeline(session, match_id, api_key, local_rl_1s=None, local
                             local_rl_1s=local_rl_1s, local_rl_2m=local_rl_2m)
 
 
-async def get_summoner_rank(session, summoner_id, platform, api_key, local_rl_1s=None, local_rl_2m=None):
+async def get_summoner_rank(session, puuid, platform, api_key, local_rl_1s=None, local_rl_2m=None):
     base_domain = PLATFORM_MAP.get(platform.upper(), BASE_DOMAIN)
-    url = f"https://{base_domain}/lol/league/v4/entries/by-summoner/{summoner_id}"
+    url = f"https://{base_domain}/lol/league/v4/entries/by-puuid/{puuid}"
     headers = {"X-Riot-Token": api_key}
     data = await do_request(session, url, headers=headers,
                             local_rl_1s=local_rl_1s, local_rl_2m=local_rl_2m)
@@ -355,7 +355,7 @@ async def process_match_data(session, match_data, timeline_data, mastery_cache, 
         # Rank info
         platform = platform_id.upper()
         summoner_id = default_text(part.get("summonerId"))
-        rank_data = await get_summoner_rank(session, summoner_id, platform, api_key)
+        rank_data = await get_summoner_rank(session, puuid, platform, api_key)
         solo_tier = default_text(rank_data["solo_tier"])
         solo_rank = default_text(rank_data["solo_rank"])
         solo_lp = default_numeric(rank_data["solo_lp"])

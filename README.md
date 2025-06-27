@@ -111,7 +111,7 @@ The script will:
     -   **`get_match_history(session, puuid, count)`**: Retrieves a list of match IDs for a given PUUID.
     -   **`get_match_details(session, match_id)`**: Fetches the details (participants, game info, etc.) for a specific match.
     -   **`get_match_timeline(session, match_id)`**: Pulls the timeline data for a match (allows final champion stats).
-    -   **`get_summoner_rank(session, summoner_id, platform_id)`**: Gets ranked info (tier, LP, wins/losses) for a summoner.
+    -   **`get_summoner_rank(session, puuid, platform_id)`**: Gets ranked info (tier, LP, wins/losses) for a summoner using PUUID.
     -   **`get_champion_mastery(session, puuid, champion_id)`**: Returns champion mastery info for a summoner + champion.
 5.  **`get_final_champion_stats`**:
     

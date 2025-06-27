@@ -123,15 +123,15 @@ async def get_match_timeline(session, match_id):
         return data
     return None
 
-async def get_summoner_rank(session, summoner_id, platform_id):
-    if not summoner_id or not platform_id:
+async def get_summoner_rank(session, puuid, platform_id):
+    if not puuid or not platform_id:
         return {}
-    cache_key = f"{platform_id}:{summoner_id}"
+    cache_key = f"{platform_id}:{puuid}"
     if cache_key in summoner_rank_cache:
         return summoner_rank_cache[cache_key]
 
     base_domain = PLATFORM_MAP.get(platform_id.upper(), BASE_DOMAIN)
-    url = f"https://{base_domain}/lol/league/v4/entries/by-summoner/{summoner_id}"
+    url = f"https://{base_domain}/lol/league/v4/entries/by-puuid/{puuid}"
     resp = await do_request(session, url, "GET", headers=HEADERS)
 
     rank_info = {
@@ -261,7 +261,7 @@ async def process_match_data(session, match_data, timeline_data, puuid_pool):
             puuid_pool.add(p)
 
         summoner_id = part.get("summonerId")
-        rank_data = await get_summoner_rank(session, summoner_id, platform_id)
+        rank_data = await get_summoner_rank(session, puuid, platform_id)
 
         champion_id = part.get("championId")
         mastery_data = await get_champion_mastery(session, p, champion_id)
