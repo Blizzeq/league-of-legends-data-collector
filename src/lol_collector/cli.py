@@ -8,6 +8,7 @@ import contextlib
 import logging
 import os
 import signal
+import sqlite3
 import sys
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
@@ -45,15 +46,32 @@ class CliError(Exception):
 
 
 def load_dotenv(path: Path = Path(".env")) -> None:
-    """Minimal ``.env`` support: KEY=VALUE lines, existing variables win."""
+    """Minimal ``.env`` support: ``KEY=VALUE`` lines; non-empty environment variables win.
+
+    Accepts ``export KEY=VALUE``, quotes, trailing ``# comments`` and files saved by
+    Windows editors (UTF-8 with BOM, UTF-16).
+    """
     if not path.is_file():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+    raw = path.read_bytes()
+    encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+    try:
+        text = raw.decode(encoding)
+    except UnicodeDecodeError:
+        log.warning("Ignoring %s: save it as UTF-8.", path)
+        return
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+        key, _, value = line.removeprefix("export ").partition("=")
+        value = value.strip()
+        if value[:1] in ("'", '"') and value[-1:] == value[:1] and len(value) > 1:
+            value = value[1:-1]
+        else:
+            value = value.split(" #", 1)[0].strip()
+        if not os.environ.get(key.strip()):
+            os.environ[key.strip()] = value
 
 
 def parse_queue(value: str) -> int | None:
@@ -308,8 +326,14 @@ async def _collect(args: argparse.Namespace) -> int:
                 log.info("Resuming: %d players queued in %s", store.pending_players(), args.db)
 
             loop = asyncio.get_running_loop()
+
+            def stop_gracefully() -> None:
+                crawler.stop()
+                # A second Ctrl+C falls through to KeyboardInterrupt and quits at once.
+                loop.remove_signal_handler(signal.SIGINT)
+
             with contextlib.suppress(NotImplementedError):  # not available on Windows
-                loop.add_signal_handler(signal.SIGINT, crawler.stop)
+                loop.add_signal_handler(signal.SIGINT, stop_gracefully)
                 loop.add_signal_handler(signal.SIGTERM, crawler.stop)
             stats = await crawler.run()
 
@@ -385,6 +409,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _report(args)
         return _info(args)
     except (CliError, SeedError, ExportError, RiotApiError) as exc:
+        log.error("%s", exc)
+        return 1
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc):
+            log.error("%s is in use by another lol-collector process.", args.db)
+        else:
+            log.error("Database error in %s: %s", args.db, exc)
+        return 1
+    except (OSError, sqlite3.Error) as exc:
         log.error("%s", exc)
         return 1
     except KeyboardInterrupt:

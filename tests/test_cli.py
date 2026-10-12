@@ -249,3 +249,46 @@ async def test_report_with_no_matching_games_returns_1(collected_db: Path, tmp_p
     )
 
     assert code == 1
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("﻿RIOT_TEST_KEY=bom-utf8".encode(), "bom-utf8"),
+        ("RIOT_TEST_KEY=utf16\r\n".encode("utf-16"), "utf16"),
+        (b"export RIOT_TEST_KEY=exported", "exported"),
+        (b"RIOT_TEST_KEY=RGAPI-abc # dev key", "RGAPI-abc"),
+        (b'RIOT_TEST_KEY="value # not a comment"', "value # not a comment"),
+    ],
+)
+def test_load_dotenv_handles_common_file_variants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes, expected: str
+) -> None:
+    monkeypatch.delenv("RIOT_TEST_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_bytes(content)
+
+    load_dotenv(env_file)
+
+    assert os.environ["RIOT_TEST_KEY"] == expected
+
+
+def test_load_dotenv_fills_an_empty_environment_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RIOT_TEST_KEY", "")
+    env_file = tmp_path / ".env"
+    env_file.write_text("RIOT_TEST_KEY=from-file\n", encoding="utf-8")
+
+    load_dotenv(env_file)
+
+    assert os.environ["RIOT_TEST_KEY"] == "from-file"
+
+
+async def test_export_into_a_path_blocked_by_a_file_returns_1(
+    collected_db: Path, tmp_path: Path
+) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+
+    assert main(["export", "--db", str(collected_db), "-o", str(blocker / "out")]) == 1

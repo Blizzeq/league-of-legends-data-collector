@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -52,11 +53,17 @@ def load_dataset(store: Store) -> an.Dataset:
 
 
 def build_report(store: Store, out: Path, options: ReportOptions) -> Path:
-    data = an.filter_dataset(load_dataset(store), list(options.patches), list(options.queues))
+    full = load_dataset(store)
+    if full.participants.empty:
+        raise ReportError("The database has no collected matches yet. Run 'lol-collector collect'.")
+    data = an.filter_dataset(full, list(options.patches), list(options.queues))
     if data.participants.empty:
         raise ReportError("No collected matches match the report filters.")
     out.parent.mkdir(parents=True, exist_ok=True)
-    report = Report(str(out))
+    # Build next to the target and move it into place, so an interrupted run never
+    # leaves (or overwrites a good report with) a partial workbook.
+    partial = out.with_name(f".{out.name}.partial")
+    report = Report(str(partial))
     try:
         _overview(report, data, options)
         if options.player:
@@ -74,8 +81,12 @@ def build_report(store: Store, out: Path, options: ReportOptions) -> Path:
         if options.max_data_rows:
             _data(report, data, options.max_data_rows)
         _glossary(report)
-    finally:
         report.close()
+    except BaseException:
+        report.book.fileclosed = True  # do not write the partial workbook on exit
+        partial.unlink(missing_ok=True)
+        raise
+    os.replace(partial, out)
     return out
 
 

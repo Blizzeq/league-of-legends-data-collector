@@ -478,3 +478,27 @@ def test_gold_lead_share_counts_only_games_with_a_15_minute_frame() -> None:
 
     assert impact.loc["Gold lead at 15:00", "occurs_in"] == 1.0
     assert impact.loc["Gold lead at 15:00", "win_rate"] == 1.0
+
+
+def test_report_on_an_empty_database_points_to_collect(tmp_path: Path) -> None:
+    with Store(tmp_path / "empty.sqlite3") as store, pytest.raises(ReportError, match="collect"):
+        build_report(store, tmp_path / "r.xlsx", ReportOptions())
+
+
+async def test_failed_build_keeps_the_previous_report(
+    collected_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "report.xlsx"
+    with Store(collected_db) as store:
+        build_report(store, out, ReportOptions(max_data_rows=0))
+        before = out.read_bytes()
+
+        def interrupted(*args: Any, **kwargs: Any) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("lol_collector.report._roles", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            build_report(store, out, ReportOptions(max_data_rows=0))
+
+    assert out.read_bytes() == before
+    assert list(tmp_path.glob("*.partial")) == []

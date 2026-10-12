@@ -164,7 +164,7 @@ class Crawler:
     def stop(self) -> None:
         """Finish the matches in progress, then return from :meth:`run`."""
         if not self._stop.is_set():
-            log.info("Stopping after the matches in progress...")
+            log.info("Stopping after the matches in progress (Ctrl+C again to quit now)...")
         self._stop.set()
 
     def _scheduling_done(self) -> bool:
