@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lol-data-collector"
+description = "Collect League of Legends match data from the Riot Games API and turn it into datasets and Excel reports."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jakub Krasuski" }]
+requires-python = ">=3.11"
+dynamic = ["version"]
+dependencies = [
+    "aiohttp>=3.10",
+    "pandas>=2.2",
+    "xlsxwriter>=3.2",
+]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=16"]
+dev = [
+    "black>=25",
+    "mypy>=1.13",
+    "openpyxl>=3.1",
+    "pandas-stubs",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+
+[project.scripts]
+lol-collector = "lol_collector.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "lol_collector.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/fakeriot.py" = ["E501"]  # dense fixture literals
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["xlsxwriter.*", "pyarrow.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
