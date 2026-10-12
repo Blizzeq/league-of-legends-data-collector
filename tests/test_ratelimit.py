@@ -155,3 +155,19 @@ async def test_set_limits_counts_each_request_once_per_window(
     await limiter.acquire()
     await limiter.acquire()
     assert sleeps == []
+
+
+async def test_acquire_all_dates_the_request_after_every_wait(
+    clock: FakeClock, sleeps: list[float]
+) -> None:
+    """The app slot must not be taken while the request still waits for the method limit."""
+    app = RateLimiter(((2, 1.0),), margin=0.0, clock=clock)
+    method = RateLimiter(((1, 1.0),), margin=0.0, clock=clock)
+
+    await ratelimit.acquire_all(app, method)
+    clock.now = 0.5
+    await ratelimit.acquire_all(app, method)  # waits for the method window until t=1.0
+
+    assert sleeps == [0.5]
+    assert app.wait_time(1.0) == 0  # one app request at t=0, one at t=1.0: room for another
+    assert app.wait_time(1.0 + 1e-9) == 0

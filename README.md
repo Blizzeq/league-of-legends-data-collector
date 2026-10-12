@@ -6,20 +6,22 @@ role, objective and item statistics.
 
 The collector crawls breadth-first: it starts from one or more players, downloads
 their recent matches, then continues with everyone they played with. The result is
-a flat, analysis-ready dataset with one row per player per game and one row per
-team per game.
+a flat table with one row per player per game and another with one row per team
+per game.
 
 - **Seeds:** Riot IDs (`Name#TAG`), PUUIDs, or a random sample of a ranked tier
   (`--seed-ladder EMERALD:II`).
 - **Filters applied by the API:** queue and date range are sent to the match list
-  endpoint, so no requests are wasted on games you do not want.
-- **Rich rows:** 107 columns per player, including laning-phase gold, CS and
+  endpoint (one list per queue when several are selected), so games from other
+  queues are never downloaded.
+- **107 columns per player**, including laning-phase gold, CS and
   XP differences at 10 and 15 minutes, damage and gold shares, runes, items, final
   champion stats, a ranked snapshot and champion mastery.
 - **Rate limits read from Riot's response headers:** development, personal and
   production keys work without configuration; `429` responses are handled.
-- **Resumable:** every match is committed on its own, so `Ctrl+C` is safe and the
-  next run continues where the last one stopped.
+- **Resumable:** every match is committed on its own and a player counts as crawled
+  only once all of its queued matches are stored, so after `Ctrl+C`, an expired key
+  or a crash the next run continues where the last one stopped.
 - **Excel report:** an overview dashboard, a champion table with win-rate
   confidence intervals, lane matchups, roles, objectives, items, an optional player
   profile, the raw data and a glossary. Charts and tables are native Excel objects, so they
@@ -77,15 +79,15 @@ lol-collector collect -p PLATFORM [seeds] [filters] [options]
 | `-q, --queue` | `ranked-solo` | `ranked-solo`, `ranked-flex`, `draft`, `swiftplay`, `aram`, `arena`, `clash`, a numeric queue ID, or `any`. Repeatable. |
 | `--since`, `--until` | | Only games started in this UTC date range (`YYYY-MM-DD`). |
 | `-n, --max-matches` | 1000 | Stop after this many new matches. |
-| `--matches-per-player` | 20 | Match history depth requested per player. |
+| `--matches-per-player` | 20 | Match history depth requested per player (per queue when several are selected). |
 | `--max-depth` | unlimited | `0` collects only the seeds' own games. |
 | `--min-duration` | 300 | Skip games shorter than this many seconds. Remakes are always skipped. |
 | `--concurrency` | 8 | Matches processed in parallel. |
-| `--no-timeline` | | Skip timelines (no laning-phase and final-stat columns, half the match requests). |
+| `--no-timeline` | | Skip timelines: one request less per match, but no laning-phase, final-stat, `dragon_soul` and team `gold_diff_at_15` columns. |
 | `--no-rank`, `--no-mastery` | | Skip ranked and mastery lookups (the most request-hungry part). |
-| `--no-static` | | Do not download Data Dragon names; keep IDs only. |
+| `--no-static` | | Do not download Data Dragon files. Item, rune and spell names become placeholders such as `Item 3031`, and the Items sheet is left empty; champion and queue names still come from the match data. |
 | `--keep-raw` | | Also store compressed raw match and timeline JSON. |
-| `--db` | `data/lol.sqlite3` | Database file. |
+| `--db` | `data/lol.sqlite3` | Database file. Accepted by every command. |
 
 Examples:
 
@@ -97,7 +99,7 @@ lol-collector collect -p EUN1 -s "YourName#EUNE" -q any --max-depth 0 --matches-
 lol-collector collect -p EUW1 --seed-ladder CHALLENGER --seed-ladder GRANDMASTER \
     --since 2026-09-01 --until 2026-10-01 -n 5000
 
-# Fast collection without per-player lookups
+# No rank or mastery lookups: about ten times fewer requests per match
 lol-collector collect -p NA1 --seed-ladder EMERALD:I --no-rank --no-mastery -n 2000
 
 # Continue the crawl stored in the database
@@ -120,11 +122,12 @@ lol-collector report [--player "Name#TAG"] [--patch X.Y] [--queue ranked-solo] [
 | Champions | Games, pick, ban and win rate with a 95% Wilson interval, KDA, CS, gold, damage, vision, gold difference at 15:00. |
 | Matchups | Champion against the enemy in the same role: games, win rate with interval, gold difference at 15:00. |
 | Roles | Averages per assigned role. |
-| Objectives | Win rate of the team that took first blood, first tower, first dragon, Atakhan, more Void Grubs, a dragon soul or a gold lead. |
-| Items | Completed items in final inventories: games, pick rate, win rate. |
+| Objectives | Win rate of the team that took each first objective (blood, tower, dragon, Rift Herald, Baron, inhibitor), more Void Grubs or dragons, Atakhan, a dragon soul, or a gold lead at 15:00. |
+| Items | Completed items in final inventories: games, pick rate, win rate. Needs Data Dragon item data. |
 | Data | The latest participant rows as an Excel table (`--max-data-rows`, default 20,000; `0` leaves it out). |
-| Glossary | Every column with its type and meaning. |
+| Glossary | Every column of the three tables with its type and meaning. |
 
+The report is written to `reports/lol-report-<date>.xlsx` unless `-o` is given.
 `--patch` takes the values listed by `lol-collector info`. Win rates are coloured
 on a red–grey–blue scale centred on 50%. Champions and matchups with fewer than
 `--min-games` games are left out, since a 70% win rate over five games says very
@@ -141,10 +144,15 @@ about 25 seconds and 1 GB of memory with the default cap, and about 90 seconds a
 lol-collector export --format csv|parquet [--tables participants teams matches] [-o data/export]
 ```
 
+Exports `participants` and `teams` unless `--tables` says otherwise.
+
 ### `info`
 
 Prints a summary of the database: collected and skipped matches, players crawled
 and queued, date range, patches and queues.
+
+Every command also accepts `--log-level DEBUG|INFO|WARNING|ERROR` before the command
+name, and `lol-collector --version` prints the version.
 
 ## Data
 
@@ -154,8 +162,8 @@ and queued, date range, patches and queues.
 | `teams` | One row per team per game. |
 | `matches` | One row per processed match, including skipped ones and the reason. |
 
-[docs/data-dictionary.md](docs/data-dictionary.md) lists every column. A few things
-worth knowing before analysing the data:
+[docs/data-dictionary.md](docs/data-dictionary.md) lists every column. Notes on
+interpreting the data:
 
 - **Rank and mastery are snapshots taken at collection time**, not at game time.
   `rank_snapshot_utc` records when.
@@ -167,6 +175,7 @@ worth knowing before analysing the data:
   (for example a new production key) needs a new database or fresh seeds.
 - **Crawl bias:** a breadth-first crawl stays close to the seeds' rank. Seed from
   several tiers with `--seed-ladder` for a broader sample.
+- **Missing values** are empty (NULL). Empty item slots are `0`, as in the API.
 
 ## Throughput
 
@@ -175,14 +184,19 @@ Riot enforces limits per API key and per routing value, so match data
 budgets. A development key allows 20 requests per second and 100 per two minutes
 on each routing value.
 
-| Mode | Requests per match | Approximate speed with a development key |
-|---|---|---|
-| Default | 2 regional + up to 20 platform | 2–3 matches per minute; rank and mastery lookups are the bottleneck |
-| `--no-rank --no-mastery` | 2 regional | about 20 matches per minute |
-| `--no-rank --no-mastery --no-timeline` | 1 regional | 30–40 matches per minute |
+Each match costs one match and one timeline request on the regional routing value,
+plus up to ten rank and ten mastery lookups on the platform. Each crawled player
+costs one more regional request for the match list (one per queue).
 
-The figures are derived from the request counts and the published limits, not
-measured. Ranked lookups are cached for 24 hours, so throughput improves as the
+| Mode | Bottleneck | Approximate speed with a development key |
+|---|---|---|
+| Default | up to 20 platform requests per match | 2–3 matches per minute |
+| `--no-rank --no-mastery` | 2 regional requests per match plus match lists | 15–20 matches per minute |
+| `--no-rank --no-mastery --no-timeline` | 1 regional request per match plus match lists | 25–35 matches per minute |
+
+The figures are estimates from these request counts and the 50 requests per minute
+a development key allows on each routing value; match-list overhead depends on how
+many of a player's games are already stored. Ranked lookups are cached for 24 hours, so throughput improves as the
 crawl revisits players. Larger datasets call for a personal or production key,
 which the collector picks up from the response headers.
 
@@ -193,8 +207,8 @@ accounts for them:
 
 - Summoner names were replaced by Riot IDs. Players are identified by PUUID and
   shown by Riot ID (`riotIdGameName#riotIdTagline`); `summonerName` is only a
-  fallback for old matches. Only `by-puuid` endpoints are used, since `summonerId`
-  is deprecated in league-v4.
+  fallback for old matches. Rank and mastery are looked up by PUUID; `summonerId`,
+  deprecated in league-v4, is not used.
 - Match-v5 data is served from four regional clusters: `americas`, `asia`,
   `europe` and `sea`. OC1 routes to `sea`; PH2 and TH2 were merged into SG2 on
   2025-01-08.
@@ -248,7 +262,7 @@ Notable column changes: `summoner_name` is now `riot_id`; `start_utc` is
 `game_start_utc`; `duration` is `game_duration_s`; `solo_rank` and `flex_rank` are
 `solo_division` and `flex_division`; `kda_ratio` is `kda`; `damage_to_champ` is
 `damage_to_champions`; item columns hold item IDs, with names in `items`; missing
-values are empty instead of `0` or `N/A`.
+values are empty instead of `0` or `N/A` (empty item slots stay `0`).
 
 ## Legal
 

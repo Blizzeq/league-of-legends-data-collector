@@ -172,3 +172,14 @@ async def test_request_outside_context_manager_raises(fake_api: FakeApi) -> None
             "europe", "account-v1.getByRiotId", "/riot/account/v1/accounts/by-riot-id/Player0/EUW"
         )
     assert fake_api.riot.requests == []
+
+
+async def test_truncated_response_is_retried(
+    fake_api: FakeApi, world: World, sleeps: list[float]
+) -> None:
+    fake_api.riot.truncate_times = 1
+    async with fake_api.client() as client:
+        account = await client.account_by_riot_id("europe", "Player0", "EUW")
+    assert account["puuid"] == world.player("p0").puuid
+    assert len(fake_api.riot.requests) == 2
+    assert len(sleeps) == 1

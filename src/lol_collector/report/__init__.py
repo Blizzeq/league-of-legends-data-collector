@@ -42,10 +42,13 @@ class ReportOptions:
 
 
 def load_dataset(store: Store) -> an.Dataset:
-    items = pd.read_sql_query(
-        "SELECT item_id, name, gold_total, completed FROM items", store.connection()
+    conn = store.connection()
+    items = pd.read_sql_query("SELECT item_id, name, gold_total, completed FROM items", conn)
+    champions = pd.read_sql_query("SELECT champion_id, name FROM champions", conn)
+    data = an.Dataset(
+        read_frame(store, "participants"), read_frame(store, "teams"), items, champions
     )
-    return an.Dataset(read_frame(store, "participants"), read_frame(store, "teams"), items)
+    return an.with_canonical_names(data)
 
 
 def build_report(store: Store, out: Path, options: ReportOptions) -> Path:
@@ -94,6 +97,11 @@ def _overview(report: Report, data: an.Dataset, options: ReportOptions) -> None:
     if filters:
         subtitle += " | filtered to " + "; ".join(filters)
     row = report.heading(ws, "League of Legends match report", subtitle)
+    patches = an.games_per_patch(data)
+    patch_list = [str(p) for p in patches["patch"]]
+    patch_text = (
+        ", ".join(patch_list) if len(patch_list) <= 2 else f"{patch_list[0]} to {patch_list[-1]}"
+    )
 
     row = report.tiles(
         ws,
@@ -113,11 +121,10 @@ def _overview(report: Report, data: an.Dataset, options: ReportOptions) -> None:
             ("First game (UTC)", stats["First game"], "yyyy-mm-dd"),
             ("Last game (UTC)", stats["Last game"], "yyyy-mm-dd"),
             ("Champions played", stats["Champions played"], "#,##0"),
-            ("Patches", stats["Patches"] or "-", None),
+            ("Patches", patch_text or "-", None),
         ],
     )
 
-    patches = an.games_per_patch(data)
     lengths = an.duration_histogram(data)
     tiers = an.tier_distribution(data)
     chart_row = row + 1
@@ -138,11 +145,12 @@ def _overview(report: Report, data: an.Dataset, options: ReportOptions) -> None:
                              categories=(5, first, first + len(lengths) - 1),
                              values=(6, first, first + len(lengths) - 1))  # fmt: skip
         ws.insert_chart(chart_row, 9, chart)
-    report.table(ws, tiers, table_row, 9, uniform_width=11)
+    report.table(ws, tiers, table_row, 13, uniform_width=11, widths={"tier": 14},
+                 empty_message="No rank snapshots: ranked lookups were turned off.")  # fmt: skip
     if not tiers.empty:
         chart = report.chart("column", "Players by Solo/Duo tier (at collection time)",
-                             sheet=ws.name, categories=(9, first, first + len(tiers) - 1),
-                             values=(10, first, first + len(tiers) - 1),
+                             sheet=ws.name, categories=(13, first, first + len(tiers) - 1),
+                             values=(14, first, first + len(tiers) - 1),
                              size=(1150, 300))  # fmt: skip
         ws.insert_chart(chart_row + 16, 1, chart)
 
@@ -153,8 +161,17 @@ def _overview(report: Report, data: an.Dataset, options: ReportOptions) -> None:
         "Rank and mastery columns are snapshots taken when the data was collected, "
         "not at game time.",
         "Win rate intervals are 95% Wilson score intervals: small samples get wide intervals.",
-        RIOT_DISCLAIMER,
+        "KDA in summary tables is (kills + assists) / deaths over all games of the group.",
     ]
+    rows = len(data.participants)
+    if not options.max_data_rows:
+        notes.append("The Data sheet was left out; use lol-collector export for the rows.")
+    elif rows > options.max_data_rows:
+        notes.append(
+            f"The Data sheet holds the latest {options.max_data_rows:,} of {rows:,} player rows; "
+            "use lol-collector export for all of them."
+        )
+    notes.append(RIOT_DISCLAIMER)
     for i, text in enumerate(notes, start=1):
         ws.merge_range(note_row + i, 1, note_row + i, 15, text, report.wrap)
         ws.set_row(note_row + i, 28 if len(text) > 120 else 15)
@@ -192,7 +209,6 @@ def _champions(report: Report, data: an.Dataset, options: ReportOptions) -> None
         signed_columns=["gold_diff_at_15"],
         empty_message=f"No champion has {options.min_games} games yet. Lower --min-games.",
     )  # fmt: skip
-    ws.freeze_panes(table_row + 1, 2)
 
 
 def _matchups(report: Report, data: an.Dataset, options: ReportOptions) -> None:
@@ -249,11 +265,15 @@ def _objectives(report: Report, data: an.Dataset) -> None:
 
 def _items(report: Report, data: an.Dataset, options: ReportOptions) -> None:
     ws = report.sheet("Items")
-    items = an.item_stats(data, options.min_games)
     row = report.heading(
         ws, "Items",
         "Completed items in final inventories. Pick rate is per player-game.",
     )  # fmt: skip
+    if data.items.empty:
+        ws.write(row, 1, "Item details are unavailable: the data was collected with --no-static "
+                 "or without access to Data Dragon.", report.muted)  # fmt: skip
+        return
+    items = an.item_stats(data, options.min_games)
     table_row = row + 17
     first = table_row + 1
     top = min(TOP_N, len(items))
@@ -263,9 +283,9 @@ def _items(report: Report, data: an.Dataset, options: ReportOptions) -> None:
                              values=(4, first, first + top - 1),
                              number_format="0%", size=(620, 320))  # fmt: skip
         ws.insert_chart(row, 1, chart)
-    report.table(ws, items, table_row, win_rate_columns=["win_rate"],
-                 bar_columns=["pick_rate"])  # fmt: skip
-    ws.freeze_panes(table_row + 1, 2)
+    report.table(ws, items, table_row, win_rate_columns=["win_rate"], bar_columns=["pick_rate"],
+                 empty_message=f"No item has {options.min_games} games yet. "
+                 "Lower --min-games.")  # fmt: skip
 
 
 def _player(report: Report, profile: an.PlayerProfile) -> None:
@@ -303,7 +323,7 @@ def _player(report: Report, profile: an.PlayerProfile) -> None:
                          categories=(helper_col, first, last),
                          values=(helper_col + 1, first, last),
                          number_format="0%", axis_min=0, axis_max=1,
-                         size=(1150, 280))  # fmt: skip
+                         size=(1150, 280), markers=len(profile.form) < 3)  # fmt: skip
     ws.insert_chart(chart_row, 1, chart)
     row = chart_row + 16
     row = report.table(ws, profile.champions, row, title="Champion pool",
@@ -321,7 +341,7 @@ def _data(report: Report, data: an.Dataset, max_rows: int) -> None:
         log.info("Data sheet limited to the latest %s of %s rows (use export for all).",
                  f"{max_rows:,}", f"{len(frame):,}")  # fmt: skip
         frame = frame.tail(max_rows)
-    patterns = {"pct": "0.0%", "float": "0.00", "datetime": "yyyy-mm-dd hh:mm"}
+    patterns = {"int": "0", "pct": "0.0%", "float": "0.00", "datetime": "yyyy-mm-dd hh:mm"}
     formats = {c.name: patterns[c.kind] for c in TABLES["participants"] if c.kind in patterns}
     report.table(ws, frame.reset_index(drop=True), 0, 0, formats=formats)
     ws.freeze_panes(1, 0)
@@ -330,7 +350,7 @@ def _data(report: Report, data: an.Dataset, max_rows: int) -> None:
 def _glossary(report: Report) -> None:
     ws = report.sheet("Glossary")
     row = report.heading(ws, "Glossary", "Columns of the Data sheet and of the CSV exports.")
-    for table in ("participants", "teams"):
+    for table in ("participants", "teams", "matches"):
         frame = pd.DataFrame(
             [(c.name, c.kind, c.description) for c in TABLES[table]],
             columns=["column", "type", "description"],

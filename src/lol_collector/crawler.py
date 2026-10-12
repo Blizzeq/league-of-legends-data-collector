@@ -33,6 +33,8 @@ TIERS = ("DIAMOND", "EMERALD", "PLATINUM", "GOLD", "SILVER", "BRONZE", "IRON")
 DIVISIONS = ("I", "II", "III", "IV")
 RANKED_QUEUE_TYPES = {420: "RANKED_SOLO_5x5", 440: "RANKED_FLEX_SR"}
 
+QueueItem = tuple[str, int, str]  # match ID, crawl depth, PUUID whose history listed it
+
 
 class SeedError(ValueError):
     """A seed could not be parsed or resolved to a PUUID."""
@@ -78,6 +80,15 @@ class CrawlStats:
         return time.monotonic() - self.started
 
 
+@dataclass
+class _PlayerProgress:
+    """Matches of one player's history that are queued or being processed."""
+
+    outstanding: int = 0
+    complete: bool = False  # every match of the history has been queued
+    failed: bool = False
+
+
 def is_puuid(value: str) -> bool:
     return len(value) == 78 and "#" not in value
 
@@ -101,6 +112,8 @@ class Crawler:
         self._static_versions_saved: set[str] = set()
         self._filter = config.match_filter
         self._in_flight: set[str] = set()
+        self._processed: set[str] = set()  # stored during this run
+        self._players: dict[str, _PlayerProgress] = {}
         self._busy = 0
         self._stop = asyncio.Event()
         self._fatal: BaseException | None = None
@@ -158,7 +171,8 @@ class Crawler:
         return self.stats.collected + len(self._in_flight) >= self.config.max_matches
 
     async def run(self) -> CrawlStats:
-        queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue(maxsize=self.config.concurrency * 2)
+        self.store.reset_unfinished()
+        queue: asyncio.Queue[QueueItem] = asyncio.Queue(maxsize=self.config.concurrency * 2)
         workers = [asyncio.create_task(self._worker(queue)) for _ in range(self.config.concurrency)]
         progress = asyncio.create_task(self._progress_loop())
         try:
@@ -173,7 +187,7 @@ class Crawler:
         self._log_progress()
         return self.stats
 
-    async def _produce(self, queue: asyncio.Queue[tuple[str, int]]) -> None:
+    async def _produce(self, queue: asyncio.Queue[QueueItem]) -> None:
         while not self._stop.is_set() and self.stats.collected < self.config.max_matches:
             if self._scheduling_done():
                 # Enough matches are in flight; some may still be skipped and free a slot.
@@ -193,31 +207,54 @@ class Crawler:
             except AuthenticationError:
                 raise
             except RiotApiError as exc:
-                log.warning("Skipping player %s...: %s", puuid[:12], exc)
-                match_ids = []
+                log.warning("Match list of %s... failed, retrying next run: %s", puuid[:12], exc)
+                self.store.set_player_status(puuid, "retry")
+                continue
+            self.store.set_player_status(puuid, "scheduled")
+            progress = self._players.setdefault(puuid, _PlayerProgress())
             known = self.store.known_match_ids(match_ids)
             for match_id in match_ids:
-                if self._scheduling_done():
-                    break  # the player stays pending; the rest is picked up later or on resume
-                if match_id in known or match_id in self._in_flight:
+                if self._stop.is_set() or self._scheduling_done():
+                    # Picked up again once a slot frees up, or on the next run.
+                    self.store.set_player_status(puuid, "pending")
+                    break
+                # Matches stored while this loop waited on the queue are in _processed.
+                if match_id in known or match_id in self._processed or match_id in self._in_flight:
                     continue
                 self._in_flight.add(match_id)
-                await queue.put((match_id, depth))
+                progress.outstanding += 1
+                await queue.put((match_id, depth, puuid))
             else:
-                self.store.mark_player_done(puuid)
-                self.stats.players += 1
+                progress.complete = True
+                self._settle(puuid)
+
+    def _settle(self, puuid: str) -> None:
+        """Mark a player done once every queued match of its history has been processed."""
+        progress = self._players.get(puuid)
+        if progress is None or not progress.complete or progress.outstanding:
+            return
+        del self._players[puuid]
+        self.store.set_player_status(puuid, "retry" if progress.failed else "done")
+        if not progress.failed:
+            self.stats.players += 1
 
     async def _match_ids(self, puuid: str) -> list[str]:
+        """A player's match IDs, filtered by the API. Several queues mean one list per queue."""
+        queues: list[int | None] = [*sorted(self.config.queues)] if self.config.queues else [None]
+        ids: list[str] = []
+        for queue in queues:
+            ids += [m for m in await self._match_ids_for_queue(puuid, queue) if m not in ids]
+        return ids
+
+    async def _match_ids_for_queue(self, puuid: str, queue: int | None) -> list[str]:
         region = match_region(self.config.platform)
-        queues = self.config.queues
-        queue_param = next(iter(queues)) if queues is not None and len(queues) == 1 else None
         ids: list[str] = []
         while len(ids) < self.config.matches_per_player:
             count = min(PAGE_SIZE, self.config.matches_per_player - len(ids))
             page = await self.client.match_ids(
                 region,
                 puuid,
-                queue=queue_param,
+                queue=queue,
                 start_time=self.config.start_time_s,
                 end_time=self.config.end_time_s,
                 start=len(ids),
@@ -228,24 +265,36 @@ class Crawler:
                 break
         return ids
 
-    async def _worker(self, queue: asyncio.Queue[tuple[str, int]]) -> None:
+    async def _worker(self, queue: asyncio.Queue[QueueItem]) -> None:
         while True:
-            match_id, depth = await queue.get()
+            match_id, depth, puuid = await queue.get()
             self._busy += 1
+            processed = failed = False
             try:
                 if not self._stop.is_set():
                     await self._process(match_id, depth)
+                    processed = True
             except AuthenticationError as exc:
                 self._fatal = exc
                 self._stop.set()
             except RiotApiError as exc:
                 self.stats.failed += 1
+                processed = failed = True
                 log.warning("Match %s failed: %s", match_id, exc)
             except Exception:
                 self.stats.failed += 1
+                processed = failed = True
                 log.exception("Unexpected error while processing %s", match_id)
             finally:
                 self._in_flight.discard(match_id)
+                progress = self._players.get(puuid)
+                if processed and progress is not None:
+                    progress.outstanding -= 1
+                    progress.failed |= failed
+                    self._settle(puuid)
+                elif not processed:
+                    # Dropped while stopping: crawl this player again on the next run.
+                    self.store.set_player_status(puuid, "pending")
                 self._busy -= 1
                 queue.task_done()
 
@@ -277,6 +326,7 @@ class Crawler:
             teams,
             raw=(match, timeline) if self.config.keep_raw else None,
         )
+        self._processed.add(match_id)
         self.stats.collected += 1
 
         if self.config.max_depth is None or depth < self.config.max_depth:
@@ -285,6 +335,7 @@ class Crawler:
 
     def _save_skipped(self, match: dict[str, Any], reason: str) -> None:
         self.store.save_match(match_row(match, "skipped", reason, utc_now()))
+        self._processed.add(match["metadata"]["matchId"])
         self.stats.skipped += 1
         log.debug("Skipped %s: %s", match["metadata"]["matchId"], reason)
 
@@ -294,6 +345,7 @@ class Crawler:
         data = await self._static.for_patch(patch_of(match["info"].get("gameVersion")))
         if data.version and data.version not in self._static_versions_saved:
             self.store.save_items(data.items.values())
+            self.store.save_champions(data.champions)
             self._static_versions_saved.add(data.version)
         return data
 

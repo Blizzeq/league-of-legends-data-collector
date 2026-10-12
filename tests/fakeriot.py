@@ -297,6 +297,7 @@ class FakeRiot:
     app_limit: str = "20:1,100:120"
     fail_429_times: int = 0
     fail_500_times: int = 0
+    truncate_times: int = 0
     reject_key: bool = False
     requests: list[str] = field(default_factory=list)
 
@@ -326,6 +327,16 @@ class FakeRiot:
         self.requests.append(request.path_qs)
         if self.reject_key or request.headers.get("X-Riot-Token") != "test-key":
             return self._json({"status": {"status_code": 403, "message": "Forbidden"}}, 403)
+        if self.truncate_times > 0:
+            # Announce a longer body than is sent, then drop the connection.
+            self.truncate_times -= 1
+            headers = {"Content-Type": "application/json", "Content-Length": "400"}
+            truncated = web.StreamResponse(headers=headers)
+            await truncated.prepare(request)
+            await truncated.write(b'{"truncated":')
+            assert request.transport is not None
+            request.transport.close()
+            return truncated
         if self.fail_500_times > 0:
             self.fail_500_times -= 1
             return web.json_response({}, status=503)

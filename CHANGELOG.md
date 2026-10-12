@@ -9,8 +9,10 @@ Rewrite of the 2025 scripts as an installable package with a command-line interf
 - `lol-collector` command with `collect`, `export`, `report` and `info` subcommands.
 - Seeding by Riot ID (`Name#TAG`) through account-v1, and random seeding from a
   ranked tier (`--seed-ladder`).
-- Queue presets and date filters passed to the match list endpoint.
-- SQLite storage with a persistent crawl frontier: runs can be stopped and resumed.
+- Queue presets and date filters passed to the match list endpoint, one request per
+  queue.
+- SQLite storage with a persistent crawl frontier: a stopped, failed or interrupted
+  run resumes without losing queued matches.
 - Team table with objectives (including Void Grubs and Atakhan), first-objective
   flags, dragon soul, gold difference at 15:00 and bans.
 - Laning-phase columns from the timeline: gold, CS and XP at 10:00 and 15:00 and the
@@ -29,7 +31,7 @@ Rewrite of the 2025 scripts as an installable package with a command-line interf
 - Ranked data comes from `league-v4/entries/by-puuid` and is cached for 24 hours;
   champion mastery is fetched on the player's own platform.
 - Riot ID replaces the retired summoner name. Missing values are stored as empty
-  instead of `0` or `N/A`.
+  instead of `0` or `N/A`; empty item slots remain `0`.
 - Data is committed per match instead of rewriting a growing CSV every 50 rows.
 
 ### Fixed

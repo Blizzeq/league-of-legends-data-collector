@@ -422,3 +422,59 @@ def test_matchups_pair_lane_opponents_from_both_sides() -> None:
     assert result.loc[("Garen", "Darius"), "win_rate"] == pytest.approx(1 / 3)
     assert result.loc[("Garen", "Darius"), "gold_diff_at_15"] == -300
     assert an.matchups(data, min_games=4).empty
+
+
+def test_champion_names_and_bans_are_resolved_by_id() -> None:
+    """Rows stored while Data Dragon was down carry internal names and numeric bans."""
+    participants = pd.DataFrame(
+        {
+            "match_id": ["M1", "M2"],
+            "participant_id": [1, 1],
+            "champion_id": [62, 62],
+            "champion_name": ["MonkeyKing", "Wukong"],
+            "win": [True, False],
+            "position": ["JUNGLE", "JUNGLE"],
+            **{c: [1.0, 1.0] for c in ["kills", "deaths", "assists", "cs_per_min"]},
+            **{
+                c: [0.5, 0.5]
+                for c in [
+                    "gold_per_min",
+                    "damage_per_min",
+                    "damage_share",
+                    "kill_participation",
+                    "vision_score_per_min",
+                    "gold_diff_at_15",
+                ]
+            },
+        }
+    )
+    teams = pd.DataFrame(
+        {"match_id": ["M1", "M2"], "bans": ["62", "Wukong"], "ban_ids": ["62", "62"]}
+    )
+    champions = pd.DataFrame({"champion_id": [62], "name": ["Wukong"]})
+    data = an.with_canonical_names(an.Dataset(participants, teams, pd.DataFrame(), champions))
+
+    stats = an.champion_stats(data, min_games=1).set_index("champion")
+
+    assert list(stats.index) == ["Wukong"]
+    assert stats.loc["Wukong", "games"] == 2
+    assert stats.loc["Wukong", "ban_rate"] == 1.0
+
+
+def test_gold_lead_share_counts_only_games_with_a_15_minute_frame() -> None:
+    teams = pd.DataFrame(
+        {
+            "match_id": ["M1", "M1", "M2", "M2"],
+            "team_id": [100, 200, 100, 200],
+            "win": [True, False, True, False],
+            "gold_diff_at_15": [5000, -5000, None, None],  # M2 ended before 15:00
+            **{c: [None] * 4 for c in an.TEAM_OBJECTIVES.values()},
+            **{c: [None] * 4 for c in ["void_grubs", "dragons", "atakhan", "dragon_soul"]},
+        }
+    )
+    data = an.Dataset(pd.DataFrame({"match_id": ["M1", "M2"]}), teams, pd.DataFrame())
+
+    impact = an.objective_impact(data).set_index("objective")
+
+    assert impact.loc["Gold lead at 15:00", "occurs_in"] == 1.0
+    assert impact.loc["Gold lead at 15:00", "win_rate"] == 1.0

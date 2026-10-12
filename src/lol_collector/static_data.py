@@ -1,8 +1,9 @@
 """Static game data (champion, item, rune, spell and queue names) from Data Dragon.
 
 Files are cached on disk per Data Dragon version, so a dataset spanning several
-patches downloads each version once. Failures are logged and degrade to IDs only:
-static data improves readability but is never required for collection.
+patches downloads each version once. Failures are logged and names fall back to
+placeholders such as ``Item 3031``: static data improves readability but is never
+required for collection.
 """
 
 from __future__ import annotations
@@ -10,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +23,7 @@ log = logging.getLogger(__name__)
 
 DDRAGON_URL = "https://ddragon.leagueoflegends.com"
 QUEUES_URL = "https://static.developer.riotgames.com/docs/lol/queues.json"
+RETRY_AFTER_S = 300.0  # how long an incomplete download is reused before trying again
 
 # Used when queues.json cannot be fetched; covers the queues people usually collect.
 FALLBACK_QUEUES: dict[int, str] = {
@@ -168,11 +172,15 @@ class StaticDataProvider:
         self._versions: list[str] | None = None
         self._queues: dict[int, str] | None = None
         self._by_version: dict[str, StaticData] = {}
+        self._incomplete_until: dict[str, float] = {}
         self._lock = asyncio.Lock()  # concurrent workers would download the same files
 
     async def _get_json(self, url: str, cache_file: Path | None) -> Any | None:
         if cache_file is not None and cache_file.exists():
-            return json.loads(cache_file.read_text(encoding="utf-8"))
+            try:
+                return json.loads(cache_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                log.warning("Ignoring unreadable cache file %s: %s", cache_file, exc)
         try:
             async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 resp.raise_for_status()
@@ -181,8 +189,11 @@ class StaticDataProvider:
             log.warning("Could not load static data from %s: %s", url, exc)
             return None
         if cache_file is not None:
+            # Write then rename, so an interrupted write never leaves a corrupt cache file.
             cache_file.parent.mkdir(parents=True, exist_ok=True)
-            cache_file.write_text(json.dumps(payload), encoding="utf-8")
+            partial = cache_file.with_suffix(".tmp")
+            partial.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(partial, cache_file)
         return payload
 
     async def _versions_list(self) -> list[str]:
@@ -226,8 +237,10 @@ class StaticDataProvider:
         version = await self.resolve_version(patch)
         if version is None:
             return StaticData(queues=await self._queue_names())
-        if version in self._by_version:
-            return self._by_version[version]
+        cached = self._by_version.get(version)
+        retry_at = self._incomplete_until.get(version)
+        if cached is not None and (retry_at is None or time.monotonic() < retry_at):
+            return cached
 
         base = f"{self._ddragon_url}/cdn/{version}/data/{self._language}"
         cache = self._cache_dir / "ddragon" / version
@@ -245,6 +258,10 @@ class StaticDataProvider:
             queues=await self._queue_names(),
         )
         self._by_version[version] = data
+        if any(p is None for p in (champions, items, spells, runes)):
+            self._incomplete_until[version] = time.monotonic() + RETRY_AFTER_S
+        else:
+            self._incomplete_until.pop(version, None)
         return data
 
 

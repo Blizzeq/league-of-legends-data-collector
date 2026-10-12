@@ -51,6 +51,7 @@ def test_schema_creates_every_table(store: Store) -> None:
         "players",
         "rank_cache",
         "raw_matches",
+        "champions",
         "items",
     }
 

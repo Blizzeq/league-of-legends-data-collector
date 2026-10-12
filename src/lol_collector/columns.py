@@ -51,7 +51,7 @@ MATCH_CONTEXT = _cols(
 PARTICIPANT_COLUMNS: tuple[Column, ...] = MATCH_CONTEXT + _cols(
     # identity
     ("participant_id", "int", "Participant slot 1-10 (1-5 blue side, 6-10 red side)."),
-    ("puuid", "str", "Player's PUUID (stable, global player ID)."),
+    ("puuid", "str", "Player's PUUID: stable, but encrypted per Riot application."),
     ("riot_id", "str", "Riot ID at the time of the game, GameName#TAG."),
     ("summoner_level", "int", "Account level."),
     ("team_id", "int", "100 = blue side, 200 = red side."),
@@ -195,6 +195,7 @@ TEAM_COLUMNS: tuple[Column, ...] = MATCH_CONTEXT + _cols(
     ("feat_epic_monsters", "int", "Feats of Warfare: featState of EPIC_MONSTER_KILL as reported."),
     ("gold_diff_at_15", "int", "Team gold minus enemy team gold at 15:00 (timeline)."),
     ("bans", "str", "Banned champions, in pick-turn order."),
+    ("ban_ids", "str", "Banned champion IDs, comma-separated, in pick-turn order."),
 )
 
 MATCH_COLUMNS: tuple[Column, ...] = _cols(
@@ -204,7 +205,7 @@ MATCH_COLUMNS: tuple[Column, ...] = _cols(
     ("game_start_utc", "datetime", "Game start time, UTC."),
     ("game_duration_s", "int", "Game length in seconds."),
     ("patch", "str", "Patch, major.minor."),
-    ("status", "str", "collected, or skipped when a filter rejected the match."),
+    ("status", "str", "collected, or skipped (not found, failed validation or filtered out)."),
     ("skip_reason", "str", "Why the match was skipped."),
     ("collected_at_utc", "datetime", "When the collector processed the match."),
 )

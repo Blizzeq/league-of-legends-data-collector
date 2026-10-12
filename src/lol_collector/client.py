@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import aiohttp
 
-from .ratelimit import DEFAULT_APP_LIMITS, RateLimiter, parse_limits
+from .ratelimit import DEFAULT_APP_LIMITS, RateLimiter, acquire_all, parse_limits
 
 log = logging.getLogger(__name__)
 
@@ -113,8 +113,7 @@ class RiotClient:
 
         attempt = 0
         while True:
-            await app_limiter.acquire()
-            await method_limiter.acquire()
+            await acquire_all(app_limiter, method_limiter)
             self.requests[method] += 1
             try:
                 async with self._session.get(
@@ -148,7 +147,7 @@ class RiotClient:
                             f"HTTP {resp.status} for {url}: {body}", status=resp.status, url=url
                         )
                     reason, status = f"HTTP {resp.status}", resp.status
-            except (TimeoutError, aiohttp.ClientConnectionError) as exc:
+            except (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientPayloadError) as exc:
                 reason, status = type(exc).__name__, None
 
             attempt += 1

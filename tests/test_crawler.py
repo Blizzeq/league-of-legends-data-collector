@@ -4,11 +4,13 @@ import json
 import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from fakeriot import World
 
+from lol_collector import client as client_module
 from lol_collector.client import AuthenticationError
 from lol_collector.crawler import CrawlConfig, Crawler, CrawlStats, SeedError
 from lol_collector.storage import Store
@@ -233,3 +235,59 @@ async def test_rejected_key_propagates_out_of_run(
     with pytest.raises(AuthenticationError, match="rejected the key"):
         await crawl(seeds=[world.player("p0").puuid])
     assert len(fake_api.riot.requests) == 1  # a rejected key is not retried
+
+
+async def test_stopped_crawl_resumes_without_losing_queued_matches(
+    crawl: CrawlFn, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Matches queued when the crawl stops are fetched by the next run."""
+    seed_matches = set(world.player("p0").match_ids) & collectable_ranked_ids(world)
+    original_save = Store.save_match
+    crawlers: list[Crawler] = []
+    original_init = Crawler.__init__
+
+    def remember(self: Crawler, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        crawlers.append(self)
+
+    def save_then_stop(self: Store, *args: Any, **kwargs: Any) -> None:
+        original_save(self, *args, **kwargs)
+        crawlers[-1].stop()
+
+    monkeypatch.setattr(Crawler, "__init__", remember)
+    monkeypatch.setattr(Store, "save_match", save_then_stop)
+    _, db_path = await crawl(seeds=[SEED], max_depth=0, concurrency=1)
+    assert 0 < len(collected_ids(db_path)) < len(seed_matches)
+
+    monkeypatch.setattr(Store, "save_match", original_save)
+    await crawl(db_path=db_path, max_depth=0, concurrency=1)
+    assert collected_ids(db_path) == seed_matches
+
+
+async def test_failed_match_list_is_retried_on_the_next_run(
+    crawl: CrawlFn, fake_api: FakeApi, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def no_wait(delay: float) -> None:
+        return None
+
+    # Only the client's back-off: the crawler's own sleeps must still yield.
+    monkeypatch.setattr(client_module, "asyncio", SimpleNamespace(sleep=no_wait))
+    fake_api.riot.fail_500_times = 6  # the first match list request and its five retries
+    stats, db_path = await crawl(seeds=[world.player("p0").puuid], max_depth=0)
+    assert stats.collected == 0
+    assert query(db_path, "SELECT status FROM players") == [("retry",)]
+
+    await crawl(db_path=db_path, max_depth=0)
+    seed_matches = set(world.player("p0").match_ids) & collectable_ranked_ids(world)
+    assert collected_ids(db_path) == seed_matches
+    assert query(db_path, "SELECT status FROM players") == [("done",)]
+
+
+async def test_every_match_is_fetched_once(crawl: CrawlFn, fake_api: FakeApi) -> None:
+    await crawl(seeds=[SEED], concurrency=4)
+    detail_requests = [
+        path
+        for path in fake_api.riot.requests
+        if "/lol/match/v5/matches/EUW1_" in path and not path.endswith("/timeline")
+    ]
+    assert len(detail_requests) == len(set(detail_requests))

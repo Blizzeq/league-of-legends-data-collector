@@ -56,7 +56,8 @@ class _SlidingWindow:
 class RateLimiter:
     """Async limiter enforcing several windows at once.
 
-    ``acquire()`` blocks until a request fits into every window. ``set_limits()``
+    ``acquire()`` (or :func:`acquire_all` for several limiters) blocks until a request
+    fits into every window. ``set_limits()``
     replaces the windows when Riot reports different values (e.g. a Personal or
     Production key), and ``block_for()`` pauses the limiter after a 429.
     """
@@ -70,7 +71,6 @@ class RateLimiter:
     ) -> None:
         self._clock = clock
         self._margin = margin
-        self._lock = asyncio.Lock()
         self._blocked_until = 0.0
         self._windows: dict[Window, _SlidingWindow] = {}
         self.set_limits(windows)
@@ -98,15 +98,38 @@ class RateLimiter:
     def block_for(self, seconds: float) -> None:
         self._blocked_until = max(self._blocked_until, self._clock() + seconds)
 
+    def wait_time(self, now: float) -> float:
+        """Seconds until one more request fits every window; ``<= 0`` means now."""
+        wait = self._blocked_until - now
+        for window in self._windows.values():
+            wait = max(wait, window.wait_time(now))
+        return wait
+
+    def record(self, now: float) -> None:
+        for window in self._windows.values():
+            window.stamps.append(now)
+
     async def acquire(self) -> None:
-        async with self._lock:
-            while True:
-                now = self._clock()
-                wait = self._blocked_until - now
-                for window in self._windows.values():
-                    wait = max(wait, window.wait_time(now))
-                if wait <= 0:
-                    for window in self._windows.values():
-                        window.stamps.append(now)
-                    return
-                await asyncio.sleep(wait + self._margin)
+        await acquire_all(self)
+
+
+async def acquire_all(*limiters: RateLimiter) -> None:
+    """Wait until a request fits every limiter, then count it in all of them at once.
+
+    Reserving the slots together matters: taking the application slot and then waiting
+    for the method limiter would date the request too early in the application window.
+    Checking and recording happen without an ``await`` in between, so concurrent
+    callers cannot overbook a window.
+    """
+    if not limiters:
+        return
+    clock = limiters[0]._clock
+    margin = max(limiter._margin for limiter in limiters)
+    while True:
+        now = clock()
+        wait = max(limiter.wait_time(now) for limiter in limiters)
+        if wait <= 0:
+            for limiter in limiters:
+                limiter.record(now)
+            return
+        await asyncio.sleep(wait + margin)

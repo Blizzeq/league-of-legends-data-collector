@@ -416,8 +416,10 @@ def test_absent_objectives_are_none(team_rows_by_side: dict[int, Json]) -> None:
 
 
 def test_bans_follow_pick_order_and_drop_empty_slots(team_rows_by_side: dict[int, Json]) -> None:
-    assert team_rows_by_side[100]["bans"] == "Ahri, Zed, Yasuo, 999"
+    assert team_rows_by_side[100]["bans"] == "Ahri, Zed, Yasuo, Champion 999"
+    assert team_rows_by_side[100]["ban_ids"] == "103,238,157,999"
     assert team_rows_by_side[200]["bans"] is None
+    assert team_rows_by_side[200]["ban_ids"] is None
 
 
 def test_dragon_soul_comes_from_the_timeline_event(team_rows_by_side: dict[int, Json]) -> None:

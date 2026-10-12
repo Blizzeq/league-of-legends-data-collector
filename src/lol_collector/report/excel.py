@@ -270,6 +270,7 @@ class Report:
         axis_max: float | None = None,
         size: tuple[int, int] = (560, 300),
         subtype: str | None = None,
+        markers: bool = False,
     ) -> Chart:
         """A single-series chart; categories/values are (column, first_row, last_row)."""
         options: dict[str, Any] = {"type": kind}
@@ -285,7 +286,11 @@ class Report:
         }
         if kind == "line":
             series["line"] = {"color": SERIES, "width": 2}
-            series["marker"] = {"type": "none"}
+            series["marker"] = (
+                {"type": "circle", "size": 7, "fill": {"color": SERIES}, "border": {"none": True}}
+                if markers
+                else {"type": "none"}
+            )
         else:
             series["fill"] = {"color": SERIES}
             series["border"] = {"none": True}

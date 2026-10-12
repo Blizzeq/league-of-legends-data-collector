@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import itertools
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 TIER_ORDER = [
@@ -39,6 +38,7 @@ class Dataset:
     participants: pd.DataFrame
     teams: pd.DataFrame
     items: pd.DataFrame
+    champions: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     @property
     def matches(self) -> int:
@@ -54,7 +54,38 @@ def filter_dataset(data: Dataset, patches: list[str], queues: list[int]) -> Data
             mask &= frame["queue_id"].isin(queues)
         return frame[mask.fillna(False)].reset_index(drop=True)
 
-    return Dataset(keep(data.participants), keep(data.teams), data.items)
+    return Dataset(keep(data.participants), keep(data.teams), data.items, data.champions)
+
+
+def champion_names(data: Dataset) -> dict[int, str]:
+    """champion_id -> display name: Data Dragon names first, else the most common stored name.
+
+    Matches collected while Data Dragon was unreachable carry Riot's internal names
+    (``MonkeyKing``); mapping by ID keeps one name per champion.
+    """
+    names: dict[int, str] = {}
+    p = data.participants
+    if {"champion_id", "champion_name"} <= set(p.columns):
+        p = p.dropna(subset=["champion_id", "champion_name"])
+    else:
+        p = p.iloc[0:0]
+    if not p.empty:
+        common = p.groupby("champion_id")["champion_name"].agg(_most_common)
+        names.update({int(str(k)): str(v) for k, v in common.items() if v is not None})
+    if not data.champions.empty:
+        names.update(
+            zip(data.champions["champion_id"].astype(int), data.champions["name"], strict=True)
+        )
+    return names
+
+
+def with_canonical_names(data: Dataset) -> Dataset:
+    names = champion_names(data)
+    p = data.participants.copy()
+    if names and not p.empty:
+        mapped = p["champion_id"].map(names).astype("string")
+        p["champion_name"] = mapped.fillna(p["champion_name"])
+    return Dataset(p, data.teams, data.items, data.champions)
 
 
 def wilson_interval(wins: float, games: float, z: float = 1.96) -> tuple[float, float]:
@@ -128,12 +159,22 @@ def _most_common(series: pd.Series) -> Any:
     return modes.iloc[0] if not modes.empty else None
 
 
-def _ban_counts(teams: pd.DataFrame) -> pd.Series:
-    bans = teams["bans"].dropna().astype(str).str.split(", ").explode()
-    bans = bans[bans != ""]
+def _ban_counts(teams: pd.DataFrame, names: dict[int, str]) -> pd.Series:
+    if "ban_ids" in teams and teams["ban_ids"].notna().any():
+        ids = teams["ban_ids"].dropna().astype(str).str.split(",").explode()
+        ids = ids[ids.str.strip() != ""]
+        bans = ids.map(lambda i: names.get(int(i), f"Champion {i}"))
+    else:  # databases collected before ban_ids existed
+        bans = teams["bans"].dropna().astype(str).str.split(", ").explode()
+        bans = bans[bans != ""]
     # A champion can be banned by both teams in the same match: count matches, not bans.
     frame = pd.DataFrame({"match_id": teams.loc[bans.index, "match_id"], "champion": bans})
     return frame.drop_duplicates().groupby("champion").size()
+
+
+def _kda(kills: pd.Series, deaths: pd.Series, assists: pd.Series) -> pd.Series:
+    """KDA over many games: (kills + assists) / deaths of the totals, as stats sites show it."""
+    return (kills + assists) / deaths.clip(lower=1)
 
 
 def champion_stats(data: Dataset, min_games: int) -> pd.DataFrame:
@@ -162,8 +203,13 @@ def champion_stats(data: Dataset, min_games: int) -> pd.DataFrame:
     stats["win_rate_low"] = [lo for lo, _ in intervals]
     stats["win_rate_high"] = [hi for _, hi in intervals]
     stats["pick_rate"] = stats["games"] / matches
-    stats["ban_rate"] = _ban_counts(data.teams).reindex(stats.index).fillna(0) / matches
-    stats["kda"] = (stats["kills"] + stats["assists"]) / stats["deaths"].clip(lower=1)
+    bans = _ban_counts(data.teams, champion_names(data))
+    stats["ban_rate"] = bans.reindex(stats.index).fillna(0) / matches
+    stats["kda"] = _kda(
+        grouped["kills"].sum().astype(float),
+        grouped["deaths"].sum().astype(float),
+        grouped["assists"].sum().astype(float),
+    )
     stats = stats[stats["games"] >= min_games].reset_index(names="champion")
     columns = [
         "champion", "main_position", "games", "pick_rate", "ban_rate", "win_rate",
@@ -229,7 +275,11 @@ def position_stats(data: Dataset) -> pd.DataFrame:
     stats = pd.DataFrame(
         {
             "games": grouped.size(),
-            "kda": grouped["kda"].mean(),
+            "kda": _kda(
+                grouped["kills"].sum().astype(float),
+                grouped["deaths"].sum().astype(float),
+                grouped["assists"].sum().astype(float),
+            ),
             "kill_participation": grouped["kill_participation"].mean(),
             "cs_per_min": grouped["cs_per_min"].mean(),
             "gold_per_min": grouped["gold_per_min"].mean(),
@@ -270,7 +320,7 @@ def objective_impact(data: Dataset) -> pd.DataFrame:
     for label, column in TEAM_OBJECTIVES.items():
         secured = t[t[column].fillna(False).astype(bool)]
         if t[column].notna().any():
-            rows.append(_objective_row(label, secured, t))
+            rows.append(_objective_row(label, secured, t, column))
     with_enemy = t.merge(
         t[["match_id", "team_id", "void_grubs", "dragons", "gold_diff_at_15"]].assign(
             team_id=lambda f: 300 - f["team_id"]
@@ -280,22 +330,30 @@ def objective_impact(data: Dataset) -> pd.DataFrame:
     )
     if with_enemy["void_grubs"].notna().any():
         more = with_enemy[with_enemy["void_grubs"] > with_enemy["void_grubs_enemy"]]
-        rows.append(_objective_row("More Void Grubs", more, t))
+        rows.append(_objective_row("More Void Grubs", more, t, "void_grubs"))
     if with_enemy["dragons"].notna().any():
         more = with_enemy[with_enemy["dragons"] > with_enemy["dragons_enemy"]]
-        rows.append(_objective_row("More dragons", more, t))
+        rows.append(_objective_row("More dragons", more, t, "dragons"))
     if t["atakhan"].notna().any():
-        rows.append(_objective_row("Atakhan", t[t["atakhan"].fillna(0) > 0], t))
-    if t["dragon_soul"].notna().any():
-        rows.append(_objective_row("Dragon soul", t[t["dragon_soul"].notna()], t))
+        rows.append(_objective_row("Atakhan", t[t["atakhan"].fillna(0) > 0], t, "atakhan"))
     if t["gold_diff_at_15"].notna().any():
-        rows.append(_objective_row("Gold lead at 15:00", t[t["gold_diff_at_15"] > 0], t))
-        rows.append(_objective_row("Gold lead > 3k at 15:00", t[t["gold_diff_at_15"] > 3000], t))
+        # Timeline-based rows: only games with a 15:00 frame count (no soul before then).
+        timeline = "gold_diff_at_15"
+        if t["dragon_soul"].notna().any():
+            soul = t[t["dragon_soul"].notna()]
+            rows.append(_objective_row("Dragon soul", soul, t, timeline))
+        lead = t[t["gold_diff_at_15"] > 0]
+        rows.append(_objective_row("Gold lead at 15:00", lead, t, timeline))
+        big_lead = t[t["gold_diff_at_15"] > 3000]
+        rows.append(_objective_row("Gold lead > 3k at 15:00", big_lead, t, timeline))
     return pd.DataFrame(rows, columns=["objective", "games", "occurs_in", "win_rate"])
 
 
-def _objective_row(label: str, secured: pd.DataFrame, teams: pd.DataFrame) -> dict[str, Any]:
-    matches = max(int(teams["match_id"].nunique()), 1)
+def _objective_row(
+    label: str, secured: pd.DataFrame, teams: pd.DataFrame, column: str
+) -> dict[str, Any]:
+    """``occurs_in`` is relative to the games where ``column`` is known."""
+    matches = max(int(teams.loc[teams[column].notna(), "match_id"].nunique()), 1)
     return {
         "objective": label,
         "games": len(secured),
@@ -317,7 +375,11 @@ def dragon_souls(data: Dataset) -> pd.DataFrame:
 
 
 def item_stats(data: Dataset, min_games: int) -> pd.DataFrame:
+    """Completed items (per Data Dragon) in final inventories; empty without item data."""
+    columns = ["item", "gold", "games", "pick_rate", "win_rate"]
     p = data.participants
+    if data.items.empty:
+        return pd.DataFrame(columns=columns)
     slots = [f"item{i}" for i in range(6)]
     long = p[["match_id", "participant_id", "win", *slots]].melt(
         id_vars=["match_id", "participant_id", "win"], value_name="item_id"
@@ -325,14 +387,10 @@ def item_stats(data: Dataset, min_games: int) -> pd.DataFrame:
     long = long[long["item_id"].fillna(0) > 0].drop_duplicates(
         ["match_id", "participant_id", "item_id"]
     )
-    items = data.items
-    if not items.empty:
-        completed = items[items["completed"].astype(bool)]
-        long = long.merge(completed[["item_id", "name", "gold_total"]], on="item_id")
-    else:
-        long = long.assign(name=long["item_id"].map(lambda i: f"Item {i}"), gold_total=np.nan)
+    completed = data.items[data.items["completed"].astype(bool)]
+    long = long.merge(completed[["item_id", "name", "gold_total"]], on="item_id")
     if long.empty:
-        return pd.DataFrame(columns=["item", "gold", "games", "pick_rate", "win_rate"])
+        return pd.DataFrame(columns=columns)
     grouped = long.groupby("name")
     frame = pd.DataFrame(
         {
@@ -343,9 +401,7 @@ def item_stats(data: Dataset, min_games: int) -> pd.DataFrame:
     )
     frame["pick_rate"] = frame["games"] / max(len(p), 1)
     frame = frame[frame["games"] >= min_games].reset_index(names="item")
-    return frame[["item", "gold", "games", "pick_rate", "win_rate"]].sort_values(
-        "games", ascending=False, ignore_index=True
-    )
+    return frame[columns].sort_values("games", ascending=False, ignore_index=True)
 
 
 # ------------------------------------------------------------------ player
@@ -373,7 +429,11 @@ def player_profile(data: Dataset, player: str, window: int = 10) -> PlayerProfil
         {
             "games": grouped.size(),
             "win_rate": grouped["win"].mean().astype(float),
-            "kda": grouped["kda"].mean(),
+            "kda": _kda(
+                grouped["kills"].sum().astype(float),
+                grouped["deaths"].sum().astype(float),
+                grouped["assists"].sum().astype(float),
+            ),
             "cs_per_min": grouped["cs_per_min"].mean(),
             "damage_per_min": grouped["damage_per_min"].mean(),
             "gold_diff_at_15": grouped["gold_diff_at_15"].mean(),
@@ -413,7 +473,7 @@ def player_profile(data: Dataset, player: str, window: int = 10) -> PlayerProfil
     summary = {
         "Games": len(mine),
         "Win rate": _mean(mine["win"]),
-        "KDA": _mean(mine["kda"]),
+        "KDA": (mine["kills"].sum() + mine["assists"].sum()) / max(int(mine["deaths"].sum()), 1),
         "CS per minute": _mean(mine["cs_per_min"]),
         "Damage share": _mean(mine["damage_share"]),
         "Vision score per minute": _mean(mine["vision_score_per_min"]),

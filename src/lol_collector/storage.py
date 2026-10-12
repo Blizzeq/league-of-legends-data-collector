@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS raw_matches (
     match_json BLOB NOT NULL,
     timeline_json BLOB
 );
+CREATE TABLE IF NOT EXISTS champions (
+    champion_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS items (
     item_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -132,13 +136,25 @@ class Store:
         ).fetchone()
         return (row[0], row[1]) if row else None
 
-    def mark_player_done(self, puuid: str) -> None:
+    def set_player_status(self, puuid: str, status: str) -> None:
+        """``pending`` -> ``scheduled`` (history queued) -> ``done``, or ``retry`` on failure."""
         with self._db:
-            self._db.execute("UPDATE players SET status = 'done' WHERE puuid = ?", (puuid,))
+            self._db.execute("UPDATE players SET status = ? WHERE puuid = ?", (status, puuid))
+
+    def mark_player_done(self, puuid: str) -> None:
+        self.set_player_status(puuid, "done")
+
+    def reset_unfinished(self) -> None:
+        """Re-queue players left ``scheduled`` by an interrupted run or marked ``retry``."""
+        with self._db:
+            self._db.execute(
+                "UPDATE players SET status = 'pending' WHERE status IN ('scheduled', 'retry')"
+            )
 
     def pending_players(self) -> int:
+        """Players not crawled yet, including those an interrupted run left unfinished."""
         return int(
-            self._db.execute("SELECT COUNT(*) FROM players WHERE status = 'pending'").fetchone()[0]
+            self._db.execute("SELECT COUNT(*) FROM players WHERE status != 'done'").fetchone()[0]
         )
 
     # -------------------------------------------------------------- matches
@@ -206,6 +222,10 @@ class Store:
                 (puuid, json.dumps(entries), fetched_at),
             )
 
+    def save_champions(self, names: dict[int, str]) -> None:
+        with self._db:
+            self._db.executemany("INSERT OR REPLACE INTO champions VALUES (?, ?)", names.items())
+
     def save_items(self, items: Iterable[Item]) -> None:
         with self._db:
             self._db.executemany(
@@ -246,7 +266,7 @@ class Store:
             "matches_skipped": status_counts.get("skipped", 0),
             "participant_rows": q("SELECT COUNT(*) FROM participants").fetchone()[0],
             "players_crawled": player_counts.get("done", 0),
-            "players_pending": player_counts.get("pending", 0),
+            "players_pending": sum(n for s, n in player_counts.items() if s != "done"),
             "first_game_utc": first,
             "last_game_utc": last,
             "patches": [

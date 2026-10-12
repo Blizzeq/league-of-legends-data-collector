@@ -360,11 +360,10 @@ def team_rows(match: Json, timeline: Json | None, static: StaticData) -> list[Ro
             return bool(obj.get("first")) if obj else None
 
         bans = sorted(team.get("bans") or [], key=lambda b: b.get("pickTurn", 0))
+        ban_ids = [int(b["championId"]) for b in bans if b.get("championId", -1) > 0]
         ban_names = [
-            static.champion_name(b["championId"], names_in_game.get(b["championId"]))
-            or str(b["championId"])
-            for b in bans
-            if b.get("championId", -1) > 0
+            static.champion_name(cid, names_in_game.get(cid)) or f"Champion {cid}"
+            for cid in ban_ids
         ]
         enemy_gold = gold_at_15.get(300 - team_id)
         own_gold = gold_at_15.get(team_id)
@@ -403,6 +402,7 @@ def team_rows(match: Json, timeline: Json | None, static: StaticData) -> list[Ro
                     else None
                 ),
                 "bans": ", ".join(ban_names) or None,
+                "ban_ids": ",".join(map(str, ban_ids)) or None,
             }
         )
         rows.append(row)
