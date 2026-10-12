@@ -223,12 +223,14 @@ def test_iter_rows_restores_booleans_and_keeps_nulls(store: Store) -> None:
     assert rows[1]["first_blood_kill"] is True
 
 
-def test_iter_rows_for_matches_leaves_out_skipped_matches(store: Store) -> None:
+def test_iter_rows_for_matches_includes_skipped_matches(store: Store) -> None:
     store.save_match(match_row("EUW1_2"))
     store.save_match(match_row("EUW1_1"))
     store.save_match(match_row("EUW1_3", status="skipped", skip_reason="ARAM"))
 
-    assert [row["match_id"] for row in store.iter_rows("matches")] == ["EUW1_1", "EUW1_2"]
+    rows = list(store.iter_rows("matches"))
+    assert [row["match_id"] for row in rows] == ["EUW1_1", "EUW1_2", "EUW1_3"]
+    assert rows[2]["skip_reason"] == "ARAM"
 
 
 def test_summary_counts_collected_matches_and_players(store: Store) -> None:

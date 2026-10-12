@@ -155,8 +155,6 @@ class Crawler:
         self._stop.set()
 
     def _scheduling_done(self) -> bool:
-        if self._stop.is_set():
-            return True
         return self.stats.collected + len(self._in_flight) >= self.config.max_matches
 
     async def run(self) -> CrawlStats:
@@ -176,7 +174,11 @@ class Crawler:
         return self.stats
 
     async def _produce(self, queue: asyncio.Queue[tuple[str, int]]) -> None:
-        while not self._scheduling_done():
+        while not self._stop.is_set() and self.stats.collected < self.config.max_matches:
+            if self._scheduling_done():
+                # Enough matches are in flight; some may still be skipped and free a slot.
+                await asyncio.sleep(0.1)
+                continue
             nxt = self.store.next_player()
             if nxt is None:
                 if queue.empty() and self._busy == 0:
@@ -193,17 +195,17 @@ class Crawler:
             except RiotApiError as exc:
                 log.warning("Skipping player %s...: %s", puuid[:12], exc)
                 match_ids = []
-            self.store.mark_player_done(puuid)
-            self.stats.players += 1
-
             known = self.store.known_match_ids(match_ids)
             for match_id in match_ids:
                 if self._scheduling_done():
-                    break
+                    break  # the player stays pending; the rest is picked up later or on resume
                 if match_id in known or match_id in self._in_flight:
                     continue
                 self._in_flight.add(match_id)
                 await queue.put((match_id, depth))
+            else:
+                self.store.mark_player_done(puuid)
+                self.stats.players += 1
 
     async def _match_ids(self, puuid: str) -> list[str]:
         region = match_region(self.config.platform)

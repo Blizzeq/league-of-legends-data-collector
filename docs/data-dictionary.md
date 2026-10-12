@@ -155,3 +155,17 @@ missing for that queue, or the game ended before the timestamp).
 | `feat_epic_monsters` | int | Feats of Warfare: featState of EPIC_MONSTER_KILL as reported. |
 | `gold_diff_at_15` | int | Team gold minus enemy team gold at 15:00 (timeline). |
 | `bans` | str | Banned champions, in pick-turn order. |
+
+## matches
+
+| Column | Type | Description |
+|---|---|---|
+| `match_id` | str | Match ID. |
+| `platform_id` | str | Platform. |
+| `queue_id` | int | Queue ID. |
+| `game_start_utc` | datetime | Game start time, UTC. |
+| `game_duration_s` | int | Game length in seconds. |
+| `patch` | str | Patch, major.minor. |
+| `status` | str | collected, or skipped when a filter rejected the match. |
+| `skip_reason` | str | Why the match was skipped. |
+| `collected_at_utc` | datetime | When the collector processed the match. |

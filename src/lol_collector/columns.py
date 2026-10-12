@@ -227,7 +227,7 @@ def data_dictionary_markdown() -> str:
         "Empty values mean the information was not available (feature disabled, field",
         "missing for that queue, or the game ended before the timestamp).",
     ]
-    for table in ("participants", "teams"):
+    for table in ("participants", "teams", "matches"):
         lines += ["", f"## {table}", "", "| Column | Type | Description |", "|---|---|---|"]
         lines += [f"| `{c.name}` | {c.kind} | {c.description} |" for c in TABLES[table]]
     return "\n".join(lines) + "\n"

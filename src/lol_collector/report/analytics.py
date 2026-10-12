@@ -111,8 +111,8 @@ def duration_histogram(data: Dataset, bin_minutes: int = 5) -> pd.DataFrame:
     minutes = data.participants.drop_duplicates("match_id")["game_duration_s"].astype(float) / 60
     if minutes.empty:
         return pd.DataFrame({"length": [], "games": []})
-    top = int(math.ceil(minutes.max() / bin_minutes) * bin_minutes)
-    edges = list(range(0, max(top, bin_minutes) + bin_minutes, bin_minutes))
+    top = int(minutes.max() // bin_minutes + 1) * bin_minutes  # bins are [a, b)
+    edges = list(range(0, top + bin_minutes, bin_minutes))
     labels = [f"{a}-{b}" for a, b in itertools.pairwise(edges)]
     bins = pd.cut(minutes, edges, labels=labels, right=False)
     counts = bins.value_counts().reindex(labels, fill_value=0)
@@ -250,9 +250,10 @@ def position_stats(data: Dataset) -> pd.DataFrame:
 
 def tier_distribution(data: Dataset) -> pd.DataFrame:
     """Unique players by Ranked Solo/Duo tier (latest snapshot per player)."""
-    p = data.participants.sort_values("rank_snapshot_utc").drop_duplicates("puuid", keep="last")
-    if p["rank_snapshot_utc"].isna().all():
+    p = data.participants.dropna(subset=["rank_snapshot_utc"])
+    if p.empty:
         return pd.DataFrame({"tier": [], "players": [], "share": []})
+    p = p.sort_values("rank_snapshot_utc").drop_duplicates("puuid", keep="last")
     tiers = p["solo_tier"].fillna("UNRANKED")
     counts = tiers.value_counts().reindex(["UNRANKED", *TIER_ORDER], fill_value=0)
     frame = counts.rename("players").rename_axis("tier").reset_index()

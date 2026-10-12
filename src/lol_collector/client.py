@@ -147,13 +147,15 @@ class RiotClient:
                         raise RiotApiError(
                             f"HTTP {resp.status} for {url}: {body}", status=resp.status, url=url
                         )
-                    reason = f"HTTP {resp.status}"
+                    reason, status = f"HTTP {resp.status}", resp.status
             except (TimeoutError, aiohttp.ClientConnectionError) as exc:
-                reason = type(exc).__name__
+                reason, status = type(exc).__name__, None
 
             attempt += 1
             if attempt > self._max_retries:
-                raise RiotApiError(f"Giving up after {attempt} attempts ({reason})", url=url)
+                raise RiotApiError(
+                    f"Giving up after {attempt} attempts ({reason})", status=status, url=url
+                )
             delay = min(60.0, 2.0**attempt) * (0.5 + random.random() / 2)
             log.warning("%s on %s, retry %d in %.1fs", reason, method, attempt, delay)
             await asyncio.sleep(delay)

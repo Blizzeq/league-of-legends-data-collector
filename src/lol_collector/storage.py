@@ -219,8 +219,7 @@ class Store:
         columns = TABLES[table]
         names = ", ".join(f'"{c.name}"' for c in columns)
         order = ", ".join(PRIMARY_KEYS[table])
-        where = " WHERE status = 'collected'" if table == "matches" else ""
-        cursor = self._db.execute(f"SELECT {names} FROM {table}{where} ORDER BY {order}")
+        cursor = self._db.execute(f"SELECT {names} FROM {table} ORDER BY {order}")
         for values in cursor:
             yield {
                 c.name: bool(v) if c.kind == "bool" and v is not None else v

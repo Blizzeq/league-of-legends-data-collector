@@ -337,7 +337,7 @@ def _export(args: argparse.Namespace) -> int:
 
 
 def _report(args: argparse.Namespace) -> int:
-    from .report import ReportOptions, build_report  # pandas/xlsxwriter import is slow
+    from .report import ReportError, ReportOptions, build_report  # slow import, load lazily
 
     _require_db(args.db)
     out = args.out or Path("reports") / f"lol-report-{date.today():%Y%m%d}.xlsx"
@@ -350,7 +350,10 @@ def _report(args: argparse.Namespace) -> int:
         max_data_rows=args.max_data_rows,
     )
     with Store(args.db) as store:
-        build_report(store, out, options)
+        try:
+            build_report(store, out, options)
+        except ReportError as exc:
+            raise CliError(str(exc)) from exc
     log.info("Report written to %s", out)
     return 0
 
