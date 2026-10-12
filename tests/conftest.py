@@ -9,8 +9,8 @@ from pathlib import Path
 import aiohttp
 import pytest
 from aiohttp.test_utils import TestServer
-
 from fakeriot import FakeRiot, World
+
 from lol_collector.client import RiotClient
 from lol_collector.crawler import CrawlConfig, Crawler
 from lol_collector.static_data import StaticDataProvider
@@ -55,8 +55,6 @@ async def fake_api(world: World) -> AsyncIterator[FakeApi]:
         yield FakeApi(riot, str(server.make_url("")).rstrip("/"))
     finally:
         await server.close()
-
-
 
 
 @pytest.fixture
