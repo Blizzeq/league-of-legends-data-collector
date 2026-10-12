@@ -7,6 +7,7 @@ static data improves readability but is never required for collection.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -167,6 +168,7 @@ class StaticDataProvider:
         self._versions: list[str] | None = None
         self._queues: dict[int, str] | None = None
         self._by_version: dict[str, StaticData] = {}
+        self._lock = asyncio.Lock()  # concurrent workers would download the same files
 
     async def _get_json(self, url: str, cache_file: Path | None) -> Any | None:
         if cache_file is not None and cache_file.exists():
@@ -217,6 +219,10 @@ class StaticDataProvider:
         return versions[0]
 
     async def for_patch(self, patch: str | None) -> StaticData:
+        async with self._lock:
+            return await self._load(patch)
+
+    async def _load(self, patch: str | None) -> StaticData:
         version = await self.resolve_version(patch)
         if version is None:
             return StaticData(queues=await self._queue_names())

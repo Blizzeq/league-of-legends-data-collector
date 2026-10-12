@@ -91,7 +91,7 @@ class RateLimiter:
             # does not reset the budget already spent.
             for (_, old_seconds), old_window in old.items():
                 if old_seconds == seconds:
-                    window.stamps = old_window.stamps
+                    window.stamps = deque(old_window.stamps)
                     break
             self._windows[(limit, seconds)] = window
 

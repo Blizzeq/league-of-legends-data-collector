@@ -57,8 +57,12 @@ def utc_now() -> str:
 
 
 def _create_table_sql(name: str, columns: Sequence[Column]) -> str:
-    cols = ", ".join(f'"{c.name}" {c.sql_type}' for c in columns)
-    pk = ", ".join(PRIMARY_KEYS[name])
+    keys = PRIMARY_KEYS[name]
+    # SQLite allows NULL in non-integer primary keys unless told otherwise.
+    cols = ", ".join(
+        f'"{c.name}" {c.sql_type}' + (" NOT NULL" if c.name in keys else "") for c in columns
+    )
+    pk = ", ".join(keys)
     return f"CREATE TABLE IF NOT EXISTS {name} ({cols}, PRIMARY KEY ({pk}))"
 
 
