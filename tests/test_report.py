@@ -11,7 +11,7 @@ from lol_collector.report import ReportError, ReportOptions, build_report, load_
 from lol_collector.report import analytics as an
 from lol_collector.storage import Store
 
-SHEETS = ["Overview", "Champions", "Roles", "Objectives", "Items", "Data", "Glossary"]
+SHEETS = ["Overview", "Champions", "Matchups", "Roles", "Objectives", "Items", "Data", "Glossary"]
 
 PARTICIPANT_DEFAULTS: dict[str, Any] = {
     "puuid": None,
@@ -397,3 +397,28 @@ async def test_patch_filter_without_matches_raises_report_error(
         _build(collected_db, out, ReportOptions(patches=["99.99"]))
 
     assert not out.exists()
+
+
+def test_matchups_pair_lane_opponents_from_both_sides() -> None:
+    rows = []
+    for match, blue_wins in (("M1", True), ("M2", True), ("M3", False)):
+        for team, champion in ((100, "Darius"), (200, "Garen")):
+            rows.append(
+                {
+                    "match_id": match,
+                    "team_id": team,
+                    "position": "TOP",
+                    "champion_name": champion,
+                    "win": blue_wins == (team == 100),
+                    "gold_diff_at_15": 300 if team == 100 else -300,
+                }
+            )
+    data = an.Dataset(pd.DataFrame(rows), pd.DataFrame(), pd.DataFrame())
+
+    result = an.matchups(data, min_games=3).set_index(["champion", "opponent"])
+
+    assert result.loc[("Darius", "Garen"), "games"] == 3
+    assert result.loc[("Darius", "Garen"), "win_rate"] == pytest.approx(2 / 3)
+    assert result.loc[("Garen", "Darius"), "win_rate"] == pytest.approx(1 / 3)
+    assert result.loc[("Garen", "Darius"), "gold_diff_at_15"] == -300
+    assert an.matchups(data, min_games=4).empty

@@ -215,11 +215,15 @@ class Store:
 
     # ---------------------------------------------------------------- reading
 
+    @staticmethod
+    def select_sql(table: str) -> str:
+        """``SELECT`` of all columns of ``table`` in primary-key order."""
+        names = ", ".join(f'"{c.name}"' for c in TABLES[table])
+        return f"SELECT {names} FROM {table} ORDER BY {', '.join(PRIMARY_KEYS[table])}"
+
     def iter_rows(self, table: str) -> Iterator[dict[str, Any]]:
         columns = TABLES[table]
-        names = ", ".join(f'"{c.name}"' for c in columns)
-        order = ", ".join(PRIMARY_KEYS[table])
-        cursor = self._db.execute(f"SELECT {names} FROM {table} ORDER BY {order}")
+        cursor = self._db.execute(self.select_sql(table))
         for values in cursor:
             yield {
                 c.name: bool(v) if c.kind == "bool" and v is not None else v

@@ -66,7 +66,7 @@ class RiotClient:
 
     async def __aenter__(self) -> RiotClient:
         if self._session is None:
-            self._session = aiohttp.ClientSession(headers={"X-Riot-Token": self._api_key})
+            self._session = aiohttp.ClientSession()
         return self
 
     async def __aexit__(
@@ -249,11 +249,9 @@ class RiotClient:
     async def league_entries_by_tier(
         self, platform: str, queue: str, tier: str, division: str, page: int = 1
     ) -> list[dict[str, Any]]:
-        """One page of ranked entries for a tier and division (league-exp-v4)."""
-        path = f"/lol/league-exp/v4/entries/{queue}/{tier.upper()}/{division.upper()}"
-        result = await self.request(
-            platform, "league-exp-v4.getLeagueEntries", path, {"page": page}
-        )
+        """One page of ranked entries for a tier below Master and a division."""
+        path = f"/lol/league/v4/entries/{queue}/{tier.upper()}/{division.upper()}"
+        result = await self.request(platform, "league-v4.getLeagueEntries", path, {"page": page})
         return list(result or [])
 
     async def champion_mastery(self, platform: str, puuid: str, champion_id: int) -> Any | None:

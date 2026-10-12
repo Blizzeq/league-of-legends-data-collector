@@ -226,6 +226,7 @@ async def test_report_writes_workbook_with_player_sheet(collected_db: Path, tmp_
         "Overview",
         "Player",
         "Champions",
+        "Matchups",
         "Roles",
         "Objectives",
         "Items",

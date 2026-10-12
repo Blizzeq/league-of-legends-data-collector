@@ -30,11 +30,8 @@ class ExportError(RuntimeError):
 
 def read_frame(store: Store, table: str) -> pd.DataFrame:
     """Load a table with proper nullable dtypes and UTC timestamps."""
-    columns = TABLES[table]
-    frame = pd.DataFrame.from_records(
-        list(store.iter_rows(table)), columns=[c.name for c in columns]
-    )
-    for column in columns:
+    frame = pd.read_sql_query(store.select_sql(table), store.connection())
+    for column in TABLES[table]:
         if column.kind == "datetime":
             frame[column.name] = pd.to_datetime(frame[column.name], utc=True)
         else:

@@ -21,8 +21,8 @@ team per game.
 - **Resumable:** every match is committed on its own, so `Ctrl+C` is safe and the
   next run continues where the last one stopped.
 - **Excel report:** an overview dashboard, a champion table with win-rate
-  confidence intervals, roles, objectives, items, an optional player profile, the
-  raw data and a glossary. Charts and tables are native Excel objects, so they
+  confidence intervals, lane matchups, roles, objectives, items, an optional player
+  profile, the raw data and a glossary. Charts and tables are native Excel objects, so they
   stay sortable and filterable.
 
 ## Requirements
@@ -118,16 +118,22 @@ lol-collector report [--player "Name#TAG"] [--patch X.Y] [--queue ranked-solo] [
 | Overview | Matches, players, average game length, blue-side win rate, games per patch, game length distribution, players by tier. |
 | Player | With `--player`: key averages, rolling win rate, champion pool against the dataset, last 20 games. |
 | Champions | Games, pick, ban and win rate with a 95% Wilson interval, KDA, CS, gold, damage, vision, gold difference at 15:00. |
+| Matchups | Champion against the enemy in the same role: games, win rate with interval, gold difference at 15:00. |
 | Roles | Averages per assigned role. |
 | Objectives | Win rate of the team that took first blood, first tower, first dragon, Atakhan, more Void Grubs, a dragon soul or a gold lead. |
 | Items | Completed items in final inventories: games, pick rate, win rate. |
-| Data | The participant rows as an Excel table (`--max-data-rows`, default 100,000; `0` leaves it out). |
+| Data | The latest participant rows as an Excel table (`--max-data-rows`, default 20,000; `0` leaves it out). |
 | Glossary | Every column with its type and meaning. |
 
 `--patch` takes the values listed by `lol-collector info`. Win rates are coloured
-on a red–grey–blue scale centred on 50%. Champions with
-fewer than `--min-games` games are left out of the tables, since a 70% win rate over
-five games says very little.
+on a red–grey–blue scale centred on 50%. Champions and matchups with fewer than
+`--min-games` games are left out, since a 70% win rate over five games says very
+little.
+
+Excel keeps every cell in memory while the file is written, so the Data sheet is
+capped. On a synthetic database of 10,000 matches (100,000 rows) the report took
+about 25 seconds and 1 GB of memory with the default cap, and about 90 seconds and
+2.9 GB with all rows. Use `export` for the complete data.
 
 ### `export`
 

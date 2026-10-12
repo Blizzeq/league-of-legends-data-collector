@@ -38,7 +38,7 @@ class ReportOptions:
     patches: Sequence[str] = field(default_factory=tuple)
     queues: Sequence[int] = field(default_factory=tuple)
     min_games: int = 10
-    max_data_rows: int = 100_000
+    max_data_rows: int = 20_000
 
 
 def load_dataset(store: Store) -> an.Dataset:
@@ -64,6 +64,7 @@ def build_report(store: Store, out: Path, options: ReportOptions) -> Path:
             else:
                 _player(report, profile)
         _champions(report, data, options)
+        _matchups(report, data, options)
         _roles(report, data)
         _objectives(report, data)
         _items(report, data, options)
@@ -192,6 +193,25 @@ def _champions(report: Report, data: an.Dataset, options: ReportOptions) -> None
         empty_message=f"No champion has {options.min_games} games yet. Lower --min-games.",
     )  # fmt: skip
     ws.freeze_panes(table_row + 1, 2)
+
+
+def _matchups(report: Report, data: an.Dataset, options: ReportOptions) -> None:
+    ws = report.sheet("Matchups")
+    row = report.heading(
+        ws,
+        "Matchups",
+        f"Champion against the enemy in the same role, at least {options.min_games} games. "
+        "Every pairing is listed from both sides; filter the Champion column.",
+    )
+    report.table(
+        ws,
+        an.matchups(data, options.min_games),
+        row,
+        win_rate_columns=["win_rate"],
+        signed_columns=["gold_diff_at_15"],
+        empty_message=f"No lane matchup has {options.min_games} games yet. Lower --min-games.",
+    )
+    ws.freeze_panes(row + 1, 0)
 
 
 def _roles(report: Report, data: an.Dataset) -> None:

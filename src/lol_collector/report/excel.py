@@ -206,7 +206,7 @@ class Report:
             if pattern:
                 spec["format"] = self.number_format(pattern)
             columns.append(spec)
-        data = [[cell_value(v) for v in record] for record in frame.itertuples(index=False)]
+        data = frame_rows(frame)
         last_row = row + len(frame)
         last_col = col + len(frame.columns) - 1
         self._table_count += 1
@@ -343,6 +343,25 @@ class Report:
             ws.write(row + i, col, cell_value(value))
             last = row + i
         return row + 1, last
+
+
+def frame_rows(frame: pd.DataFrame) -> list[list[Any]]:
+    """Rows as plain Python values: ``None`` for missing, naive UTC datetimes.
+
+    Converts column by column, which is much faster than per-cell conversion on the
+    Data sheet.
+    """
+    columns: list[list[Any]] = []
+    for name in frame.columns:
+        series = frame[name]
+        is_datetime = isinstance(series.dtype, pd.DatetimeTZDtype)
+        if is_datetime:
+            series = series.dt.tz_convert(None)
+        values = series.astype(object).where(series.notna(), None).tolist()
+        if is_datetime or series.dtype == object:
+            values = [cell_value(v) for v in values]
+        columns.append(values)
+    return [list(row) for row in zip(*columns, strict=True)]
 
 
 def _auto_width(series: pd.Series, header: str) -> float:

@@ -17,7 +17,7 @@ Rewrite of the 2025 scripts as an installable package with a command-line interf
   differences to the lane opponent.
 - Damage and gold shares, kill participation, per-minute rates, runes, summoner
   spells and item names from Data Dragon, cached per patch.
-- Excel report with an overview dashboard, champion, role, objective and item
+- Excel report with an overview dashboard, champion, matchup, role, objective and item
   sheets, an optional player profile, the raw data and a glossary.
 - CSV and Parquet export, a generated data dictionary, a test suite against a local
   fake Riot API, and CI.

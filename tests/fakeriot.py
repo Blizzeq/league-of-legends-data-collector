@@ -1,6 +1,6 @@
 """Synthetic Riot API for tests: a deterministic world of players and matches served over HTTP.
 
-Payload shapes follow match-v5, league-v4, league-exp-v4, champion-mastery-v4,
+Payload shapes follow match-v5, league-v4, champion-mastery-v4,
 account-v1 and Data Dragon. Values are random but internally consistent.
 """
 
@@ -351,7 +351,7 @@ class FakeRiot:
                 if len(parts) > 5 and parts[5] == "timeline":
                     return self._json(w.timelines[match_id])
                 return self._json(w.matches[match_id])
-            if parts[:4] == ["lol", "league", "v4", "entries"]:
+            if parts[:5] == ["lol", "league", "v4", "entries", "by-puuid"]:
                 return self._json(self._entries(w.by_puuid[parts[5]]))
             if parts[:3] == ["lol", "league", "v4"] and parts[3].endswith("leagues"):
                 tier = parts[3].removesuffix("leagues").upper()
@@ -361,7 +361,7 @@ class FakeRiot:
                     if p.tier == tier
                 ]
                 return self._json({"tier": tier, "queue": parts[5], "entries": entries})
-            if parts[:3] == ["lol", "league-exp", "v4"]:
+            if parts[:4] == ["lol", "league", "v4", "entries"]:
                 tier, division = parts[5], parts[6]
                 page = int(request.query.get("page", "1"))
                 entries = (

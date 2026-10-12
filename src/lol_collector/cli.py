@@ -259,8 +259,8 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument(
         "--max-data-rows",
         type=non_negative_int,
-        default=100_000,
-        help="rows in the Data sheet; 0 leaves it out (default: 100000)",
+        default=20_000,
+        help="rows in the Data sheet; 0 leaves it out (default: 20000)",
     )
 
     sub.add_parser("info", parents=[db_arg], help="summarise the database")
