@@ -380,4 +380,4 @@ def _auto_width(series: pd.Series, header: str) -> float:
         else:
             text = str(value)
         longest = max(longest, len(text))
-    return float(min(max(longest + 2, min(len(header), 14) + 2, 8), 42))
+    return float(min(max(longest + 2, min(len(header), 25) + 2, 8), 42))

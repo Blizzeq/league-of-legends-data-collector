@@ -118,6 +118,7 @@ class Crawler:
         self._stop = asyncio.Event()
         self._fatal: BaseException | None = None
         self._rank_tasks: dict[str, asyncio.Task[Row]] = {}
+        self._mastery_tasks: dict[tuple[str, int], asyncio.Task[Row]] = {}
         self._progress_interval_s = progress_interval_s
 
     # ---------------------------------------------------------------- seeds
@@ -359,8 +360,7 @@ class Crawler:
             if self.config.rank:
                 row.update(await self._rank(puuid, host))
             if self.config.mastery and row.get("champion_id") is not None:
-                mastery = await self.client.champion_mastery(host, puuid, int(row["champion_id"]))
-                row.update(mastery_columns(mastery))
+                row.update(await self._mastery(puuid, int(row["champion_id"]), host))
         except AuthenticationError:
             raise
         except RiotApiError as exc:
@@ -385,6 +385,25 @@ class Crawler:
         fetched_at = utc_now()
         self.store.save_rank(puuid, entries, fetched_at)
         return rank_columns(entries, fetched_at)
+
+    async def _mastery(self, puuid: str, champion_id: int, host: str) -> Row:
+        key = (puuid, champion_id)
+        task = self._mastery_tasks.get(key)
+        if task is None:
+            task = asyncio.ensure_future(self._fetch_mastery(puuid, champion_id, host))
+            self._mastery_tasks[key] = task
+            task.add_done_callback(lambda _: self._mastery_tasks.pop(key, None))
+        return dict(await task)
+
+    async def _fetch_mastery(self, puuid: str, champion_id: int, host: str) -> Row:
+        cached = self.store.cached_mastery(puuid, champion_id, self.config.rank_max_age)
+        if cached is not None:
+            mastery, _ = cached
+            return mastery_columns(mastery)
+        mastery = await self.client.champion_mastery(host, puuid, champion_id)
+        fetched_at = utc_now()
+        self.store.save_mastery(puuid, champion_id, mastery, fetched_at)
+        return mastery_columns(mastery)
 
     # ------------------------------------------------------------ progress
 

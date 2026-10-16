@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS rank_cache (
     entries_json TEXT NOT NULL,
     fetched_at_utc TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS mastery_cache (
+    puuid TEXT NOT NULL,
+    champion_id INTEGER NOT NULL,
+    mastery_json TEXT NOT NULL,
+    fetched_at_utc TEXT NOT NULL,
+    PRIMARY KEY (puuid, champion_id)
+);
 CREATE TABLE IF NOT EXISTS raw_matches (
     match_id TEXT PRIMARY KEY,
     match_json BLOB NOT NULL,
@@ -220,6 +227,30 @@ class Store:
             self._db.execute(
                 "INSERT OR REPLACE INTO rank_cache VALUES (?, ?, ?)",
                 (puuid, json.dumps(entries), fetched_at),
+            )
+
+    def cached_mastery(
+        self, puuid: str, champion_id: int, max_age: timedelta
+    ) -> tuple[dict[str, Any] | None, str] | None:
+        row = self._db.execute(
+            "SELECT mastery_json, fetched_at_utc FROM mastery_cache "
+            "WHERE puuid = ? AND champion_id = ?",
+            (puuid, champion_id),
+        ).fetchone()
+        if row is None:
+            return None
+        fetched = datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        if datetime.now(UTC) - fetched > max_age:
+            return None
+        return json.loads(row[0]), row[1]
+
+    def save_mastery(
+        self, puuid: str, champion_id: int, mastery: dict[str, Any] | None, fetched_at: str
+    ) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO mastery_cache VALUES (?, ?, ?, ?)",
+                (puuid, champion_id, json.dumps(mastery), fetched_at),
             )
 
     def save_champions(self, names: dict[int, str]) -> None:

@@ -50,6 +50,7 @@ def test_schema_creates_every_table(store: Store) -> None:
         "teams",
         "players",
         "rank_cache",
+        "mastery_cache",
         "raw_matches",
         "champions",
         "items",
@@ -188,6 +189,26 @@ def test_cached_rank_expires_after_max_age(
 
     assert store.cached_rank("alice", max_age) == ((entries, fetched) if cached else None)
     assert store.cached_rank("nobody", max_age) is None
+
+
+@pytest.mark.parametrize(
+    ("age", "max_age", "cached"),
+    [
+        (timedelta(hours=1), timedelta(hours=24), True),
+        (timedelta(hours=25), timedelta(hours=24), False),
+        (timedelta(hours=24), timedelta(hours=24), False),
+    ],
+)
+def test_cached_mastery_expires_after_max_age(
+    store: Store, age: timedelta, max_age: timedelta, cached: bool
+) -> None:
+    fetched = (datetime.now(UTC) - age).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mastery = {"championId": 103, "championLevel": 7, "championPoints": 123456}
+    store.save_mastery("alice", 103, mastery, fetched)
+
+    assert store.cached_mastery("alice", 103, max_age) == ((mastery, fetched) if cached else None)
+    assert store.cached_mastery("alice", 999, max_age) is None
+    assert store.cached_mastery("nobody", 103, max_age) is None
 
 
 def test_save_items_stores_completed_flag_as_int_and_replaces_by_id(store: Store) -> None:
